@@ -5,7 +5,7 @@ Formatting to be learned
 
 Github content
 
-Summary of data
+Summary of data + design experimental as a figure
 
 Setup with DESeq2
 
