@@ -1,0 +1,845 @@
+---
+title: "JR DEGs analysis workflow and exploration of genes"
+author: "Julien Roy"
+date: "12-11-2024"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    theme: yeti
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    number_sections: true
+  pdf_document:
+    fig_caption: true
+    toc: true
+---
+
+**For an easy and quick DEG analysis**
+
+Simply provide the directory, load the needed DESeq object and your list of genes. Then run the whole script. Most comparisons of interest are included.
+
+For more details and to understanding the design and the factors for this study, please refer to "JR DEGs analysis : processing". An overview of all genes and the steps carried out upstream are explained.
+
+```{r setup, include = FALSE}
+library(knitr)
+library(svglite)
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(apeglm)
+library(pheatmap)
+library(vegan)
+library(RColorBrewer)
+library(grid)
+library(wesanderson)
+library(tibble)
+library(reshape2)
+library(patchwork)
+library(plotly)
+library(DESeq2)
+library(tidyr)
+
+# Define each part of the path as a separate component
+drive <- "C:"
+users <- "Users"
+user_name <- "julie"
+onedrive <- "OneDrive - Université Laval"
+folder <- "Stage recherche/DEGs_analysis_sex_plasticity_data/DEGs_analysis_workflow"
+
+# Use file.path() to construct the full path
+full_path <- file.path(drive, users, user_name, onedrive, folder)
+
+# Set the working directory for knitting
+knitr::opts_knit$set(root.dir = full_path)
+
+# Set the working directory
+setwd(full_path)
+getwd()
+```
+
+# Step 1: Load data
+
+## Load list of genes
+
+**Gene list must be a CSV file without headers**
+
+Follow the provided template, where 1st columns is LOCID (e.g. LOC115696989
+), 2nd column is gene common name (e.g. CsFT1), 3rd column is gene pathway (e.g. adjacent) and 4th column is the rank (i.e. the order in which the genes will be displayed)
+
+*If this list contains LOCtest, be wary of it's effect on a principal component analysis. It should then either be removed for this step, or from the list altogether.*
+
+```{r get genes}
+# Get genes of interest
+gene_list <- read.csv("gene_list.csv", sep = ",", header = FALSE, stringsAsFactors = FALSE)
+
+# Define the gene name as "of interest" for later steps
+genes_of_interest <- gene_list[, 1]
+```
+
+## Load Rdata from "analysis : processing" output
+
+**This includes the DESeq object, the merged colData and merged count as a matrix**
+
+```{r get data}
+# Get raw data from DESeq2 processing
+load("dds_filtered.RData")
+load("colData.RData")
+load("count_matrix.RData")
+```
+
+**For many QA, visualisation and exploratory steps, data from day 0 and 1 separate from flower data is needed, since the visuals are skewed by large spread from day 14 data. e.g PCA and Heatmap steps**
+
+This filtering step must be done before performing VST, since it uses
+
+Here, LOCtest can be removed from the **dds_filtered** object if needed.
+
+```{r get veg only data}
+# Identify samples to keep for multiple PCA combinations
+samples_to_keep_veg <- colData(dds_filtered)$Day != "14" # those that do not have "14" in the "Day" column
+samples_to_keep_0 <- colData(dds_filtered)$Day == "0" # those that have "0" in the "Day" column
+
+# Subset the dds_filtered object to include only the samples for each combination
+dds_filtered_veg <- dds_filtered[, samples_to_keep_veg]
+dds_filtered_0 <- dds_filtered[, samples_to_keep_0]
+
+```
+
+## PCA Plot of genes of interest
+Intermediary quality assessment step that uses data from the DESEQDataSet post HTSFilter. It allows to check whether the genes from your list are differentially expressed in the samples, i.e. if they vary with photoperiod change, sex, treatment, cultivar or batch.
+
+VST is applied to control for relatively higher variance at low mean counts, biasing for high-count genes.
+
+95 % confidence interval plotted as ellipses (type can be = euclidean or = t)
+
+```{r PCA, message=FALSE}
+create_pca <- function(dds, gene_list, plot_title) {
+  
+  # Perform VST transformation
+  vsd <- vst(dds, blind = TRUE) # blind must be true forthe matrix model to fit on data. Testing shows minimal differences
+  
+  # Filter variance-stabilized data by genes of interest
+  genes_of_interest <- gene_list[, 1]
+  vsd_interest <- vsd[rownames(vsd) %in% genes_of_interest, ]
+  
+  # Create a grouping column in the colData for sample visualization
+  colData_vsd <- as.data.frame(colData(vsd_interest))
+  colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Day, colData_vsd$Batch, sep = "_")
+  colData(vsd_interest) <- DataFrame(colData_vsd)
+  
+  # Generate PCA data
+  pcaData <- plotPCA(vsd_interest, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+  
+  # Extract PCA coordinates
+  pca_coords <- as.data.frame(pcaData[, 1:2])
+  
+  # Add Cultivar as a grouping variable
+  pca_coords$Cultivar <-colData(vsd_interest)$Cultivar
+  pca_coords$Group <-colData(vsd_interest)$Group
+  
+  # Calculate the percentage of variance explained for PC1 and PC2
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  
+  # Define custom colors for groups
+  custom_colors <- c("XX_0_a" = "#00ff00", 
+                   "XX_1_a" = "#00b300",
+                   "XX_14_a" = "#006600",
+                   "XY_0_a" = "#ffcc00", 
+                   "XY_0_b" = "#4d94ff", 
+                   "XY_1_b" = "#0047b3", 
+                   "XY_14_b" = "#002966", 
+                   "XX_0_b" = "#8600b3")
+ 
+  # Create PCA plot using ggplot2
+  pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+    geom_point(aes(shape = Cultivar), size = 2) +
+    stat_ellipse(type = "t", level = 0.95, linetype = 2) +
+    scale_color_manual(values = custom_colors) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    coord_fixed() +
+    ggtitle(plot_title) +
+    theme(plot.title = element_text(hjust = 0.3))
+  
+  return(pca_plot)
+}
+
+# Use the function for each PCA
+pca_plot_all <- create_pca(dds_filtered, gene_list, "PCA of VSD for floral genes (n=12)")
+pca_plot_veg <- create_pca(dds_filtered_veg, gene_list, "PCA of VSD for floral genes in leaves (n=12)")
+pca_plot_0 <- create_pca(dds_filtered_0, gene_list, "PCA of VSD for floral genes in leaves at day 0 (n=12)")
+
+print(pca_plot_all)
+print(pca_plot_veg)
+print(pca_plot_0)
+
+```
+
+# Generate heatmap from VST data
+
+Since this part is quite complex, with varying amount of groups, heatmaps are created separately.
+
+Plotting all groups together would be overwhelming, hard to decipher and values are skewed by over-expression in leaf or immature flower tissues.
+
+## For day 0 and 1 samples
+
+```{r heatmap 1}
+# Generate VST data
+vsd_heatmap <- vst(dds_filtered, blind = TRUE)
+
+# Filter the variance stabilized data
+genes_heatmap <- gene_list[, 1]
+vsd_heatmap_filtered <- vsd_heatmap[rownames(vsd_heatmap) %in% genes_heatmap, ]
+
+# Extract the assay data
+vsd_data <- assay(vsd_heatmap_filtered)
+
+# Replace gene IDs with common names from the gene_list dataframe
+rownames(vsd_data) <- gene_list[, 2][match(rownames(vsd_data), gene_list[, 1])]
+
+# Access the colData from the filtered DESeqTransform object in order to add a grouping column (for sample visualization)
+colData_vsd <- as.data.frame(colData(vsd_heatmap_filtered))
+
+# Create a new column by concatenating the "Sex", "Day", and "Treatment" columns
+colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Day, colData_vsd$Batch, sep = "")
+
+# Update the colData in the vsd_interest object with the new column
+colData(vsd_heatmap_filtered) <- DataFrame(colData_vsd)
+
+# Create an annotation data frame for the heatmap
+annotation_col <- as.data.frame(colData(vsd_heatmap_filtered)[, c("Group", "Cultivar")])
+rownames(annotation_col) <- colnames(vsd_data)
+
+# Specify the custom order for groups
+group_order <- c("XX0b", "XX0a", "XX1a", "XX14a", "XY0a", "XY0b", "XY1b", "XY14b")
+
+# Apply the custom order to the Group factor
+annotation_col$Group <- factor(annotation_col$Group, levels = group_order)
+
+# Order the samples by the custom Group factor levels
+ordered_sample_indices <- order(annotation_col$Group)
+vsd_data_ordered <- vsd_data[, ordered_sample_indices]
+annotation_col_ordered <- annotation_col[ordered_sample_indices, ]
+
+# Define color palettes using RColorBrewer
+# Skip the first two colors of Set1 for Treatment
+num_treatments <- 8
+group_colors <- brewer.pal(n = num_treatments, name = "Set1")
+cultivar_colors <- brewer.pal(n = length(unique(annotation_col_ordered$Cultivar)), name = "Set2")
+
+# Create a named list of colors
+annotation_colors <- list(
+  Group = setNames(group_colors, unique(annotation_col_ordered$Group)),
+  Cultivar = setNames(cultivar_colors, unique(annotation_col_ordered$Cultivar))
+)
+
+# If bugged because a gene row has only 0 values (Error in hclust(d, method = method) : NA/NaN/Inf in foreign function call (arg 10))
+# Remove the gene causing the issue, or change "cluster_rows" to FALSE.
+zero_genes <- "CsACS9"
+vsd_data_ordered <- vsd_data_ordered[!rownames(vsd_data_ordered) %in% zero_genes, ]
+
+# Generate the heatmap
+heatmap <- pheatmap(vsd_data_ordered,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,
+         show_colnames = FALSE,
+         annotation_col = annotation_col_ordered,
+         annotation_colors = annotation_colors,
+         scale = "row",
+         main = "Heatmap of VSD for ERG (n=37) in days 0 and 1",
+         fontsize_row = 8,
+         fontsize_col = 8,
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+         border_color = NA)
+
+print(heatmap)
+```
+
+# DEG for basic contrasts
+
+In order to show the change in gene expression (LFC) for genes more reliably, the results calculated are shrunk. The purpose of this shrinkage is to provide more conservative estimates of LFCs, particularly when dealing with genes with low counts or high variability.
+
+**apeglm v. ashr as lfcShrink options**
+ashr was used in order to save time, since it can use any contrast specified, even if not present in "resultsNames".
+
+Both method were verified to have similar outputs. Furthermore, Pvalues and padj values are unaffected by the choice of shrinkage method
+
+## Types of contrasts
+
+**There are multiple ways to call for a contrast of interest**
+
+Since the baseline (relevel) is female (XX), day 0, batch a, deadly kernel (DK) and control, any call for contrast starts at this intercept.
+
+Calling for contrast name = "Day_1_vs_0" will output the change in gene expression from female flowers at day 1 v. female flowers at day 0.
+
+In order to get a combination of contrast, e.g. "what is the effect of photoperiod change on male flowers?", both the day change contrast and the sex:day interaction must be provided as a list of contrasts : contrast=list(c("Day_1_v_0","SexXy.Day1"))
+
+In simple terms, "Day_1_vs_0" is the distance "A" from FF0 to FF1, which also applies to males (MF0), and the interaction "SexXY.Day1" allows to account for a different effect on males by representing the distance "B" from the expected expression level (MF0 + distance "A") to the actual level (MF1). "A" + "B" = MF0 to MF1.
+
+Credit to Hugo Tavares from the BTF at Cambridge, read his explanations here : https://github.com/tavareshugo/tutorial_DESeq2_contrasts
+
+More explanations can be found on this video from the Bioinformagician channel : https://www.youtube.com/watch?v=OPt51qc5YJ8
+Feel free to explore the channel, more videos relating to DESeq2 are available.
+
+If working with LOCtest, remember that lfcshrink changes the LFC value from the expected level (most variations are quite low, about 0.02).
+
+**The first way to call for contrast, which is the simplest, is to simply specify the factor name, or a list if multiple factors are needed**
+
+Here, let's first extract the effect of photoperiod change on XX and XY;
+
+
+```{r named contrast, message=FALSE}
+# Using lfcShrink and a coefficient name (contrast) for day change (photoperiod change)
+res_photoperiod_XX_shrink <- lfcShrink(dds_filtered, coef = "Day_1_vs_0", type = "ashr")
+
+# Using lfcShrink and a list of contrast for XY, since it requires an interaction term
+res_photoperiod_XY_shrink <- lfcShrink(dds_filtered, contrast=list(c("Day_1_vs_0","Day1.SexXY")), type = "ashr")
+
+head(res_photoperiod_XX_shrink)
+head(res_photoperiod_XY_shrink)
+
+```
+
+This is straightforward, but requires to understand the interaction terms and their combination.
+
+The effects of photoperiod change is accurate.
+
+**The second way to call for contrasts involves using the model matrix to create groups**
+
+At all times, the comparison is done from the first group over the second : group A v. group B will show the ratio of expression of A over B
+
+Here, let's compare batch a XY at day 1 to batch b XY at day 1, hoping to extract the effect of the batch on males at day 0
+```{r model matrix, message=FALSE}
+# get the model matrix (to be viewed in order to follow)
+mod_mat <- model.matrix(design(dds_filtered), colData(dds_filtered))
+#print(mod_mat)
+
+# Then define the groups you wish to compare by calling columns info
+a_XY_0 <- colMeans(mod_mat[dds_filtered$Batch == "a" & dds_filtered$Sex == "XY" & dds_filtered$Day == "0", ])
+b_XY_0 <- colMeans(mod_mat[dds_filtered$Batch == "b" & dds_filtered$Sex == "XY" & dds_filtered$Day == "0", ])
+
+# Using lfcShrink on the groups
+res_batch_test_shrink <- lfcShrink(dds_filtered, contrast = b_XY_0 - a_XY_0, type = "ashr")
+
+head(res_batch_test_shrink)
+```
+
+**The issue with this method comes from the inclusion of all factors affecting the group**
+
+In this case, the LFCs of genes are the addition of the batch effect ( XY in batch b v. XY in batch a), the interaction term of Batch with XY (since XX is baseline).
+
+This can be seen in the printed output when calling head(res) :
+log2 fold change (MMSE): 0,+1,+0.0606060606060606,-0.0303030303030303,0,0,0,0,0,+1 
+(these values in the "contrast vector" represent the weights of each factors of the model matrix taken into account for this specific contrast)
+
+The imbalance of replicates for cultivars in some groups (when n=11, cultivars are 4 + 4 + 3) skews the group contrast (decimals values in the contrast vector)
+
+Let's say there are 3 samples from cultivar A and 12 from cultivar B, and the effect of batch on cultivar A is LFC = 2, while the effect on B is LFC = 4
+
+You might want the result of batch be shown as a form of average of the two cultivars, which would be LFC = 3. A balanced study would provide this result.
+
+The sample imbalance will skew the result to be around LFC = 3.5 since it weights cultivar B 4 times as much.
+
+Here, the result is accurate as it does represent the LFC of genes between batch XY at day 0 to control XY at day 0, but it doesn't provide information about the batch effect by itself. It's quite close since imbalance is low.
+
+This method is still usable, as it is quite easy to implement, but it needs to be understood.
+
+**The third way to call for contrast, using a contrast vector, is more precise**
+
+
+```{r contrast vectors, message=FALSE}
+# Define weights for each factor
+contrast_vector_batch <- c(0,+1,0,0,0,0,0,0,0,+1 ) # this is the same vector, without decimal values from imbalance
+res_batch_alt_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_batch, type = "ashr")
+
+head(res_batch_alt_shrink)
+```
+
+This result shows the expected LFC value explained by the batch effect on males
+
+## DEGs plots
+
+Here, most contrasts that can be extracted from the experimental design for basic DEG from the gene list are provided :
+
+  1. Sex difference at day 0;
+  
+  2. Photoperiod change (long-day to short-day) in both sexes;
+  
+  3. Batch effect in both sexes (in order to identify genes that should be interpreted carefully)
+
+```{r pipeline, message=FALSE}
+# Sex difference at day 0 (overall sex factor and separate vector for each batch)
+contrast_vector_sex_all <- c(0,0,0,0,0,0,1,0,0,0.5)
+res_sex_0_a_shrink <- lfcShrink(dds_filtered, coef = "Sex_XY_vs_XX", type = "ashr")
+res_sex_0_b_shrink <- lfcShrink(dds_filtered, contrast=list(c("Sex_XY_vs_XX","Batchb.SexXY")), type = "ashr")
+res_sex_0_all_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_sex_all, type = "ashr")
+
+# Simple call for photoperiod length change effect in XX and XY
+res_photoperiod_XX_shrink <- lfcShrink(dds_filtered, coef = "Day_1_vs_0", type = "ashr")
+res_photoperiod_XY_shrink <- lfcShrink(dds_filtered, contrast=list(c("Day_1_vs_0","Day1.SexXY")), type = "ashr")
+
+# Simple call for tissue differences, or effect of day 14 from day 1
+contrast_vector_tissue_XX <- c(0,0,0,0,-1,1,0,0,0,0)
+contrast_vector_tissue_XY <- c(0,0,0,0,-1,1,0,-1,1,0)
+res_tissue_XX_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_tissue_XX, type = "ashr")
+res_tissue_XY_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_tissue_XY, type = "ashr")
+
+# Simple call for batch effects
+res_batch_XX_shrink <- lfcShrink(dds_filtered, coef = "Batch_b_vs_a", type = "ashr")
+res_batch_XY_shrink <- lfcShrink(dds_filtered, contrast=list(c("Batch_b_vs_a","Batchb.SexXY")), type = "ashr")
+
+# Simple call for sex diff at day 1
+contrast_vector_sex_1 <- c(0,0,0,0,0,0,1,1,0,0.5)
+res_sex_1_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_sex_1, type = "ashr")
+
+# Simple call for sex diff at day 14
+contrast_vector_sex_14 <- c(0,0,0,0,0,0,1,0,1,0.5)
+res_sex_14_shrink <- lfcShrink(dds_filtered, contrast=contrast_vector_sex_14, type = "ashr")
+
+```
+
+## Filter for genes and replace LOCUS for gene names
+```{r genes, eval=TRUE, echo=TRUE}
+# Combined function to filter, replace gene IDs with common names, add columns, and sort
+process_and_sort_genes <- function(res_df, gene_list, locus_order, genes_of_interest) {
+  # Step 1: Filter the dataframe for genes of interest
+  res_filtered <- res_df[rownames(res_df) %in% genes_of_interest, ]
+  
+  # Step 2: Replace gene IDs with common names
+  rownames(res_filtered) <- gene_list[, 2][match(rownames(res_filtered), gene_list[, 1])]
+  
+  # Step 3: Convert to dataframe and add the Locus column
+  res_filtered <- as.data.frame(res_filtered)
+  res_filtered$Locus <- rownames(res_filtered)
+  
+  # Step 4: Merge with locus_order to add Pathway and V4 columns, and sort by V4
+  res_filtered <- res_filtered %>%
+    left_join(locus_order, by = c("Locus" = "V2")) %>%
+    arrange(V4)
+  
+  return(res_filtered)
+}
+
+# Prepare locus_order (if not already prepared)
+locus_order <- gene_list %>% arrange(V4) %>% select(V2, V3, V4)
+
+# Process all comparisons
+res_sex_0_a_sorted <- process_and_sort_genes(res_sex_0_a_shrink, gene_list, locus_order, genes_of_interest)
+res_sex_0_b_sorted <- process_and_sort_genes(res_sex_0_b_shrink, gene_list, locus_order, genes_of_interest)
+res_sex_0_all_sorted <- process_and_sort_genes(res_sex_0_all_shrink, gene_list, locus_order, genes_of_interest)
+
+res_photoperiod_XX_sorted <- process_and_sort_genes(res_photoperiod_XX_shrink, gene_list, locus_order, genes_of_interest)
+res_photoperiod_XY_sorted <- process_and_sort_genes(res_photoperiod_XY_shrink, gene_list, locus_order, genes_of_interest)
+
+res_tissue_XX_sorted <- process_and_sort_genes(res_tissue_XX_shrink, gene_list, locus_order, genes_of_interest)
+res_tissue_XY_sorted <- process_and_sort_genes(res_tissue_XY_shrink, gene_list, locus_order, genes_of_interest)
+
+res_batch_XX_sorted <- process_and_sort_genes(res_batch_XX_shrink, gene_list, locus_order, genes_of_interest)
+res_batch_XY_sorted <- process_and_sort_genes(res_batch_XY_shrink, gene_list, locus_order, genes_of_interest)
+
+res_sex_1_sorted <- process_and_sort_genes(res_sex_1_shrink, gene_list, locus_order, genes_of_interest)
+res_sex_14_sorted <- process_and_sort_genes(res_sex_14_shrink, gene_list, locus_order, genes_of_interest)
+
+
+```
+
+## Filter for significance (padj) (and LFC if required)
+```{r}
+# Define a function to filter based on adjusted p-value
+filter_by_alpha <- function(df, alpha_threshold = 0.05) {
+  return(rownames(df[!is.na(df$padj) & df$padj <= alpha_threshold, ]))
+}
+
+# Define a function to filter based on log2 fold change
+filter_by_logfc <- function(df, genes, logfc_threshold = 1) {
+  df_filtered <- df[rownames(df) %in% genes & abs(df$log2FoldChange) >= logfc_threshold, ]
+  return(rownames(df_filtered))
+}
+
+# User-defined filtering preferences
+filter_genes <- FALSE # Change this to FALSE to bypass filtering
+
+# Set thresholds based on user preference
+if (!filter_genes) {
+  alpha_threshold <- 1      # No filtering by adjusted p-value
+  logfc_threshold <- 0      # No filtering by log2 fold change
+} else {
+  alpha_threshold <- 0.05   # Default adjusted p-value threshold
+  logfc_threshold <- 1      # Default log2 fold change threshold
+}
+```
+
+### Filter for genes
+The filtration should pool genes with significance inside each effect contrast
+
+**THIS SECTION CAN BE SKIPPED IN ORDER TO KEEP ALL GENES IN FINAL GRAPHS, CHECK ABOVE**
+
+```{r, eval=TRUE, echo=TRUE}
+# Combine the list of genes that have alpha <= 0.05 in at least one dataframe
+genes_sex_0_alpha_filtered <- unique(c(
+  filter_by_alpha(res_sex_0_a_sorted, alpha_threshold),
+  filter_by_alpha(res_sex_0_b_sorted, alpha_threshold),
+  filter_by_alpha(res_sex_0_all_sorted, alpha_threshold)))
+
+genes_photoperiod_alpha_filtered <- unique(c(
+  filter_by_alpha(res_photoperiod_XX_sorted, alpha_threshold),
+  filter_by_alpha(res_photoperiod_XY_sorted, alpha_threshold)))
+
+genes_tissue_alpha_filtered <- unique(c(
+  filter_by_alpha(res_tissue_XX_sorted, alpha_threshold),
+  filter_by_alpha(res_tissue_XY_sorted, alpha_threshold)))
+
+genes_batch_alpha_filtered <- unique(c(
+  filter_by_alpha(res_batch_XX_sorted, alpha_threshold),
+  filter_by_alpha(res_batch_XY_sorted, alpha_threshold)))
+
+genes_trd1_alpha_filtered <- unique(c(
+  filter_by_alpha(res_sex_1_sorted, alpha_threshold)))
+
+genes_trd2_alpha_filtered <- unique(c(
+  filter_by_alpha(res_sex_14_sorted, alpha_threshold)))
+
+
+# Get the list of genes that have log2FC >= 1 (absolute) in at least one dataframe
+genes_sex_0_logfc_filtered <- unique(c(
+  filter_by_logfc(res_sex_0_a_sorted, genes_sex_0_alpha_filtered, logfc_threshold),
+  filter_by_logfc(res_sex_0_b_sorted, genes_sex_0_alpha_filtered, logfc_threshold),
+  filter_by_logfc(res_sex_0_all_sorted, genes_sex_0_alpha_filtered, logfc_threshold)))
+
+genes_photoperiod_logfc_filtered <- unique(c(
+  filter_by_logfc(res_photoperiod_XX_sorted, genes_photoperiod_alpha_filtered, logfc_threshold),
+  filter_by_logfc(res_photoperiod_XY_sorted, genes_photoperiod_alpha_filtered, logfc_threshold)))
+
+genes_tissue_logfc_filtered <- unique(c(
+  filter_by_logfc(res_tissue_XX_sorted, genes_tissue_alpha_filtered, logfc_threshold),
+  filter_by_logfc(res_tissue_XY_sorted, genes_tissue_alpha_filtered, logfc_threshold)))
+
+genes_batch_logfc_filtered <- unique(c(
+  filter_by_logfc(res_batch_XX_sorted, genes_batch_alpha_filtered, logfc_threshold),
+  filter_by_logfc(res_batch_XY_sorted, genes_batch_alpha_filtered, logfc_threshold)))
+
+genes_trd1_logfc_filtered <- unique(c(
+  filter_by_logfc(res_sex_1_sorted, genes_trd1_alpha_filtered, logfc_threshold)))
+
+genes_trd2_logfc_filtered <- unique(c(
+  filter_by_logfc(res_sex_14_sorted, genes_trd1_alpha_filtered, logfc_threshold)))
+
+# Filter the original dataframes based on the final list of genes
+# Change the reference gene list in order to bypass the LFC threshold
+res_sex_0_a_filtered <- res_sex_0_a_sorted[rownames(res_sex_0_a_sorted) %in% genes_sex_0_logfc_filtered, ]
+res_sex_0_b_filtered <- res_sex_0_b_sorted[rownames(res_sex_0_b_sorted) %in% genes_sex_0_logfc_filtered, ]
+res_sex_0_all_filtered <- res_sex_0_all_sorted[rownames(res_sex_0_all_sorted) %in% genes_sex_0_logfc_filtered, ]
+nrow((res_sex_0_all_filtered))
+
+res_photoperiod_XX_filtered <- res_photoperiod_XX_sorted[rownames(res_photoperiod_XX_sorted) %in% genes_photoperiod_logfc_filtered, ]
+res_photoperiod_XY_filtered <- res_photoperiod_XY_sorted[rownames(res_photoperiod_XY_sorted) %in% genes_photoperiod_logfc_filtered, ]
+nrow((res_photoperiod_XX_filtered))
+
+res_tissue_XX_filtered <- res_tissue_XX_sorted[rownames(res_tissue_XX_sorted) %in% genes_tissue_logfc_filtered, ]
+res_tissue_XY_filtered <- res_tissue_XY_sorted[rownames(res_tissue_XY_sorted) %in% genes_tissue_logfc_filtered, ]
+nrow((res_tissue_XX_filtered))
+
+res_batch_XX_filtered <- res_batch_XX_sorted[rownames(res_batch_XX_sorted) %in% genes_batch_logfc_filtered, ]
+res_batch_XY_filtered <- res_batch_XY_sorted[rownames(res_batch_XY_sorted) %in% genes_batch_logfc_filtered, ]
+nrow((res_batch_XX_filtered))
+
+res_sex_1_filtered <- res_sex_1_sorted[rownames(res_sex_1_sorted) %in% genes_trd1_logfc_filtered, ]
+res_sex_14_filtered <- res_sex_14_sorted[rownames(res_sex_14_sorted) %in% genes_trd1_logfc_filtered, ]
+
+```
+
+# Graphing Log2FC 
+
+## Defining functions needed for graphs:
+
+```{r}
+# Define a function to determine significance stars, handling NA values
+add_significance_stars <- function(p_value) {
+  if (is.na(p_value)) {
+    return("")
+  } else if (p_value < 0.001) {
+    return("***")
+  } else if (p_value < 0.01) {
+    return("**")
+  } else if (p_value < 0.05) {
+    return("*")
+  } else {
+    return("")
+  }
+}
+
+# Function to add necessary columns to already filtered dataframes and make Locus the first column
+format_results <- function(res_df, treatment_name, name) {
+  if (!is.data.frame(res_df)) {
+    res_df <- as.data.frame(res_df)
+  }
+  
+  res_df <- res_df %>%
+    mutate(
+      Treatment = treatment_name,
+      Comparison = name,  # Add the name of the contrast
+      significance = sapply(padj, add_significance_stars),
+      star_y = ifelse(log2FoldChange > 0, (log2FoldChange + lfcSE) + 0.5, (log2FoldChange - lfcSE) - 0.75)
+    )
+  
+  # Reorder columns to make Locus the first column
+  res_df <- res_df %>%
+    select(Locus, everything())
+  
+  return(res_df)
+}
+
+```
+
+## Formatting data and plotting
+
+```{r}
+# Format the already contrasted dataframes
+res_sex_0_a_formatted <- format_results(res_sex_0_a_filtered, treatment_name = "Sex diff. at day 0 (XY/XX)", name = "Batch a")
+res_sex_0_b_formatted <- format_results(res_sex_0_b_filtered, treatment_name = "Sex diff. at day 0 (XY/XX)", name = "Batch b")
+res_sex_0_all_formatted <- format_results(res_sex_0_all_filtered, treatment_name = "Sex diff. at day 0 (XY/XX)", name = "Overall")
+
+res_photoperiod_XX_formatted <- format_results(res_photoperiod_XX_filtered, treatment_name = "Photoperiod change (Day 1/Day 0)", name = "Effect on XX")
+res_photoperiod_XY_formatted <- format_results(res_photoperiod_XY_filtered, treatment_name = "Photoperiod change (Day 1/Day 0)", name = "Effect on XY")
+
+res_tissue_XX_formatted <- format_results(res_tissue_XX_filtered, treatment_name = "Tissue/maturity (Day 14 [flower]/Day 1 [leaf])", name = "Effect on XX")
+res_tissue_XY_formatted <- format_results(res_tissue_XY_filtered, treatment_name = "Tissue/maturity (Day 14 [flower]/Day 1 [leaf])", name = "Effect on XY")
+
+res_batch_XX_formatted <- format_results(res_batch_XX_filtered, treatment_name = "Batch (season) (b/a)", name = "Effect on XX")
+res_batch_XY_formatted <- format_results(res_batch_XY_filtered, treatment_name = "Batch (season) (b/a)", name = "Effect on XY")
+
+res_sex_1_formatted <- format_results(res_sex_1_filtered, treatment_name = "Sex diff. at day 1", name = "XY/XX")
+res_sex_14_formatted <- format_results(res_sex_14_filtered, treatment_name = "Sex diff. at day 14", name = "XY/XX")
+
+# Combine formatted dataframes from effect of interest
+combined_df_sex_0 <- bind_rows(
+  res_sex_0_a_formatted %>% mutate(Comparison = res_sex_0_a_formatted$Comparison),
+  res_sex_0_b_formatted %>% mutate(Comparison = res_sex_0_b_formatted$Comparison),
+  res_sex_0_all_formatted %>% mutate(Comparison = res_sex_0_all_formatted$Comparison))
+
+combined_df_photoperiod <- bind_rows(
+  res_photoperiod_XX_formatted %>% mutate(Comparison = res_photoperiod_XX_formatted$Comparison),
+  res_photoperiod_XY_formatted %>% mutate(Comparison = res_photoperiod_XY_formatted$Comparison))
+
+combined_df_tissue <- bind_rows(
+  res_tissue_XX_formatted %>% mutate(Comparison = res_tissue_XX_formatted$Comparison),
+  res_tissue_XY_formatted %>% mutate(Comparison = res_tissue_XY_formatted$Comparison))
+
+combined_df_batch <- bind_rows(
+  res_batch_XX_formatted %>% mutate(Comparison = res_batch_XX_formatted$Comparison),
+  res_batch_XY_formatted %>% mutate(Comparison = res_batch_XY_formatted$Comparison))
+
+combined_df_sex_1 <- bind_rows(
+  res_sex_1_formatted %>% mutate(Comparison = res_sex_1_formatted$Comparison))
+
+combined_df_sex_14 <- bind_rows(
+  res_sex_14_formatted %>% mutate(Comparison = res_sex_14_formatted$Comparison))
+
+# Create an order using the rank from the gene_list
+combined_df_sex_0$Order <- as.integer(combined_df_sex_0$V4)
+combined_df_sex_0$V4 <- NULL
+
+combined_df_photoperiod$Order <- as.integer(combined_df_photoperiod$V4)
+combined_df_photoperiod$V4 <- NULL
+
+combined_df_tissue$Order <- as.integer(combined_df_tissue$V4)
+combined_df_tissue$V4 <- NULL
+
+combined_df_batch$Order <- as.integer(combined_df_batch$V4)
+combined_df_batch$V4 <- NULL
+
+combined_df_sex_1$Order <- as.integer(combined_df_sex_1$V4)
+combined_df_sex_1$V4 <- NULL
+
+combined_df_sex_14$Order <- as.integer(combined_df_sex_14$V4)
+combined_df_sex_14$V4 <- NULL
+
+# Ensure combined_df is sorted by Order
+combined_df_sex_0_ordered <- combined_df_sex_0 %>% arrange(Order)
+
+combined_df_photoperiod_ordered <- combined_df_photoperiod %>% arrange(Order)
+
+combined_df_tissue_ordered <- combined_df_tissue %>% arrange(Order)
+
+combined_df_batch_ordered <- combined_df_batch %>% arrange(Order)
+
+combined_df_sex_1_ordered <- combined_df_sex_1 %>% arrange(Order)
+
+combined_df_sex_14_ordered <- combined_df_sex_14 %>% arrange(Order)
+
+# Set the factor levels for Locus based on the order in combined_df$Order
+combined_df_sex_0_ordered$Locus <- factor(combined_df_sex_0_ordered$Locus,
+levels = unique(combined_df_sex_0_ordered$Locus[order(combined_df_sex_0_ordered$Order)]))
+
+combined_df_photoperiod_ordered$Locus <- factor(combined_df_photoperiod_ordered$Locus,
+levels = unique(combined_df_photoperiod_ordered$Locus[order(combined_df_photoperiod_ordered$Order)]))
+
+combined_df_tissue_ordered$Locus <- factor(combined_df_tissue_ordered$Locus,
+levels = unique(combined_df_tissue_ordered$Locus[order(combined_df_tissue_ordered$Order)]))
+
+combined_df_batch_ordered$Locus <- factor(combined_df_batch_ordered$Locus,
+levels = unique(combined_df_batch_ordered$Locus[order(combined_df_batch_ordered$Order)]))
+
+combined_df_sex_1_ordered$Locus <- factor(combined_df_sex_1_ordered$Locus,
+levels = unique(combined_df_sex_1_ordered$Locus[order(combined_df_sex_1_ordered$Order)]))
+
+combined_df_sex_14_ordered$Locus <- factor(combined_df_sex_14_ordered$Locus,
+levels = unique(combined_df_sex_14_ordered$Locus[order(combined_df_sex_14_ordered$Order)]))
+
+```
+
+## Combined contrasts plot
+
+```{r rectangles}
+# Define the color palette
+cluster_palette <- wes_palette("BottleRocket2", n = 4)
+
+# Define the function
+create_clustered_plot <- function(data, title = "Clustered Plot", locus_col = "Locus", 
+                                  log2FC_col = "log2FoldChange", comparison_col = "Comparison", 
+                                  lfcSE_col = "lfcSE", significance_col = "significance", 
+                                  star_y_col = "star_y", fill_palette = cluster_palette) {
+  # Calculate the y-axis limits based on the data
+  log2FC_min <- min(data[[log2FC_col]], na.rm = TRUE) - 2.5
+  log2FC_max <- max(data[[log2FC_col]], na.rm = TRUE) + 2.5
+  
+  # Create a data frame for the rectangles
+  # Even indices represent positions where rectangles should be drawn
+  if (length(unique(data[[locus_col]])) > 1) {
+  rect_data <- data.frame(
+    xmin = which(seq_along(unique(data[[locus_col]])) %% 2 == 0) - 0.5,
+    xmax = which(seq_along(unique(data[[locus_col]])) %% 2 == 0) + 0.5,
+    ymin = log2FC_min,
+    ymax = log2FC_max
+  )
+} else {
+  rect_data <- data.frame(
+    xmin = numeric(0),
+    xmax = numeric(0),
+    ymin = numeric(0),
+    ymax = numeric(0)
+  )
+}
+  
+  clustered_plot <- ggplot(data, aes(x = .data[[locus_col]], y = .data[[log2FC_col]], fill = .data[[comparison_col]])) +
+    geom_rect(data = rect_data, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+              fill = "gray30", alpha = 0.2, inherit.aes = FALSE) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.9) +
+    geom_errorbar(aes(ymin = .data[[log2FC_col]] - .data[[lfcSE_col]], 
+                      ymax = .data[[log2FC_col]] + .data[[lfcSE_col]]), 
+                  width = 0.2, position = position_dodge(width = 0.9)) +
+    geom_text(aes(label = .data[[significance_col]], y = .data[[star_y_col]]), 
+              position = position_dodge(width = 0.9), size = 3) +
+    scale_fill_manual(values = fill_palette) +
+    theme_minimal() +
+    labs(title = title, y = "Log2 Fold Change", x = "Locus", fill = "Contrast") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.2, size = 10),
+          axis.title.x = element_text(size = 12, margin = margin(t = 5)),
+          axis.title.y = element_text(size = 12),
+          strip.text.y = element_text(angle = 0),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_line(color = "grey80"),
+          panel.grid.minor.y = element_blank(),
+          panel.background = element_blank(),
+          axis.line = element_blank(),
+          legend.position = "right",
+          legend.title = element_text(size = 10),
+          legend.text = element_text(size = 8),
+          panel.spacing = unit(1, "lines")) +
+    geom_hline(yintercept = 0, color = "black", linewidth = 1) +
+    scale_y_continuous(limits = c(log2FC_min, log2FC_max),n.breaks = 6, expand = c(0, 0))
+  
+  # Return the plot
+  return(clustered_plot)
+}
+
+plot_sex <- create_clustered_plot(combined_df_sex_0_ordered, title = "Sex diff. at day 0 (XY/XX)")
+print(plot_sex)
+# Change is sex difference
+
+plot_day <- create_clustered_plot(combined_df_photoperiod_ordered, title = "Photoperiod change (Day 1/Day 0)")
+print(plot_day)
+# Change is photoperiod effect
+
+plot_tissue <- create_clustered_plot(combined_df_tissue_ordered, title = "Tissue/maturity (Day 14 [flower]/Day 1 [leaf])")
+print(plot_tissue)
+# Change is photoperiod effect
+
+plot_batch <- create_clustered_plot(combined_df_batch_ordered, title = "Batch (b/a) (Nov./Feb.)")
+print(plot_batch)
+# Change is photoperiod effect
+
+plot_sex_1 <- create_clustered_plot(combined_df_sex_1_ordered, title = "Sex diff. at day 1 (XY/XX)")
+print(plot_sex_1)
+# Change is ETHEPHON effect on cultivars at day 1
+
+plot_sex_14 <- create_clustered_plot(combined_df_sex_14_ordered, title = "Sex diff. at day 14 (XY/XX)")
+print(plot_sex_14)
+# Change is STS effect on cultivars at day 1
+
+```
+# Expression counts for genes of interests
+```{r individual box & whiskers plots}
+# Extract counts data
+normalized_counts <- counts(dds_filtered, normalized = TRUE)
+normalized_counts_df <- as.data.frame(normalized_counts)
+pseudo_count <- 0.1 # to avoid issues with log scale
+normalized_counts_df <- normalized_counts_df + pseudo_count
+
+# Filter the count dataframe based on LOCID in gene_list$V1
+normalized_counts_df_filtered <- normalized_counts_df[rownames(normalized_counts_df) %in% gene_list$V1, ]
+
+# Replace LOCID (rownames) with the corresponding common gene names from gene_list$V2
+rownames(normalized_counts_df_filtered) <- gene_list$V2[match(rownames(normalized_counts_df_filtered), gene_list$V1)]
+
+# Include rownames as a column in colData
+colData_df <- as.data.frame(colData) %>%
+  rownames_to_column("sample")
+
+# Prepare the plot data
+plot_data <- normalized_counts_df_filtered %>%
+  as.data.frame() %>%
+  rownames_to_column("gene") %>%
+  pivot_longer(-gene, names_to = "sample", values_to = "count") %>%
+  left_join(colData_df, by = "sample") %>%
+  mutate(
+    sex_batch = paste(Sex, Batch, sep = "_"), # Combine sex and batch
+    sex_batch = factor(sex_batch),           # Convert to factor
+    Day = factor(Day, levels = c("0", "1", "14")) # Ensure custom order for days
+  )
+
+# Subset for the genes you want to plot
+genes_to_plot <- c("CsAP1_x3", "CsAP3") # Replace with your genes
+plot_data_filtered <- plot_data %>% filter(gene %in% genes_to_plot)
+
+# Define custom colors for each group (sex_batch)
+custom_colors <- c(
+  "XX_a" = "#cc0066", # Example: Blue for XX_a
+  "XX_b" = "#ff9933", # Example: Orange for XX_b
+  "XY_a" = "#33cc33", # Example: Green for XY_a
+  "XY_b" = "#009999"  # Example: Red for XY_b
+)
+
+# Create the plot with log-scaled Y-axis
+ggplot(plot_data_filtered, aes(x = Day, y = count, fill = sex_batch)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+  facet_wrap(~gene, scales = "free_y") +
+  labs(title = "Gene Expression Boxplots", x = "Day", y = "Normalized Counts (log scale)") +
+  scale_y_log10() + # Log-scale the y-axis
+  scale_fill_manual(
+    values = custom_colors,  # Use the custom color palette
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  )
+
+```
+
