@@ -170,3 +170,142 @@ print(pca_plot_filtered)
 
 # Final VST Data for WGCNA
 vsd <- vst(dds_scaled, blind = FALSE)
+
+Add this part :
+# Step 1: Load data
+
+## Load list of genes
+
+**Gene list must be a CSV file without headers**
+
+Follow the provided template, where 1st columns is LOCID (e.g. LOC115696989
+), 2nd column is gene common name (e.g. CsFT1), 3rd column is gene pathway (e.g. adjacent) and 4th column is the rank (i.e. the order in which the genes will be displayed)
+
+*If this list contains LOCtest, be wary of it's effect on a principal component analysis. It should then either be removed for this step, or from the list altogether.*
+
+{r get genes}
+# Get genes of interest
+gene_list <- read.csv("gene_list.csv", sep = ",", header = FALSE, stringsAsFactors = FALSE)
+
+# Define the gene name as "of interest" for later steps
+genes_of_interest <- gene_list[, 1]
+
+
+## Load Rdata from "analysis : processing" output
+
+**This includes the DESeq object, the merged colData and merged count as a matrix**
+
+{r get data}
+# Get raw data from DESeq2 processing
+load("dds_filtered.RData")
+load("colData.RData")
+load("count_matrix.RData")
+
+
+**For many QA, visualisation and exploratory steps, data from day 0 and 1 separate from flower data is needed, since the visuals are skewed by large spread from day 14 data. e.g PCA and Heatmap steps**
+
+This filtering step must be done before performing VST, since it uses
+
+Here, LOCtest can be removed from the **dds_filtered** object if needed.
+
+{r get veg only data}
+# Identify samples to keep for multiple PCA combinations
+samples_to_keep_veg <- colData(dds_filtered)$Day != "14" # those that do not have "14" in the "Day" column
+samples_to_keep_0 <- colData(dds_filtered)$Day == "0" # those that have "0" in the "Day" column
+
+# Subset the dds_filtered object to include only the samples for each combination
+dds_filtered_veg <- dds_filtered[, samples_to_keep_veg]
+dds_filtered_0 <- dds_filtered[, samples_to_keep_0]
+
+
+## PCA Plot of genes of interest
+Intermediary quality assessment step that uses data from the DESEQDataSet post HTSFilter. It allows to check whether the genes from your list are differentially expressed in the samples, i.e. if they vary with photoperiod change, sex, treatment, cultivar or batch.
+
+VST is applied to control for relatively higher variance at low mean counts, biasing for high-count genes.
+
+95 % confidence interval plotted as ellipses (type can be = euclidean or = t)
+
+{r PCA, message=FALSE}
+create_pca <- function(dds, gene_list, plot_title) {
+  
+  # Perform VST transformation
+  vsd <- vst(dds, blind = TRUE) # blind must be true forthe matrix model to fit on data. Testing shows minimal differences
+  
+  # Filter variance-stabilized data by genes of interest
+  genes_of_interest <- gene_list[, 1]
+  vsd_interest <- vsd[rownames(vsd) %in% genes_of_interest, ]
+  
+  # Create a grouping column in the colData for sample visualization
+  colData_vsd <- as.data.frame(colData(vsd_interest))
+  colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Day, colData_vsd$Batch, sep = "_")
+  colData(vsd_interest) <- DataFrame(colData_vsd)
+  
+  # Generate PCA data
+  pcaData <- plotPCA(vsd_interest, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+  
+  # Extract PCA coordinates
+  pca_coords <- as.data.frame(pcaData[, 1:2])
+  
+  # Add Cultivar as a grouping variable
+  pca_coords$Cultivar <-colData(vsd_interest)$Cultivar
+  pca_coords$Group <-colData(vsd_interest)$Group
+  
+  # Calculate the percentage of variance explained for PC1 and PC2
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  
+  # Define custom colors for groups
+  custom_colors <- c("XX_0_a" = "#00ff00", 
+                   "XX_1_a" = "#00b300",
+                   "XX_14_a" = "#006600",
+                   "XY_0_a" = "#ffcc00", 
+                   "XY_0_b" = "#4d94ff", 
+                   "XY_1_b" = "#0047b3", 
+                   "XY_14_b" = "#002966", 
+                   "XX_0_b" = "#8600b3")
+ 
+  # Create PCA plot using ggplot2
+  pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+    geom_point(aes(shape = Cultivar), size = 2) +
+    stat_ellipse(type = "t", level = 0.95, linetype = 2) +
+    scale_color_manual(values = custom_colors) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    coord_fixed() +
+    ggtitle(plot_title) +
+    theme(plot.title = element_text(hjust = 0.3))
+  
+  return(pca_plot)
+}
+
+# Use the function for each PCA
+pca_plot_all <- create_pca(dds_filtered, gene_list, "PCA of VSD for floral genes (n=12)")
+pca_plot_veg <- create_pca(dds_filtered_veg, gene_list, "PCA of VSD for floral genes in leaves (n=12)")
+pca_plot_0 <- create_pca(dds_filtered_0, gene_list, "PCA of VSD for floral genes in leaves at day 0 (n=12)")
+
+print(pca_plot_all)
+print(pca_plot_veg)
+print(pca_plot_0)
+
+# Generate heatmap from VST data
+
+Since this part is quite complex, with varying amount of groups, heatmaps are created separately.
+
+Plotting all groups together would be overwhelming, hard to decipher and values are skewed by over-expression in leaf or immature flower tissues.
+
+## For day 0 and 1 samples
+
+{r heatmap 1}
+# Generate VST data
+vsd_heatmap <- vst(dds_filtered, blind = TRUE)
+
+# Filter the variance stabilized data
+genes_heatmap <- gene_list[, 1]
+vsd_heatmap_filtered <- vsd_heatmap[rownames(vsd_heatmap) %in% genes_heatmap, ]
+
+# Extract the assay data
+vsd_data <- assay(vsd_heatmap_filtered)
+
+# Replace gene IDs with common names from the gene_list dataframe
+rownames(vsd_data) <- gene_list[, 2][match(rownames(vsd_data), gene_list[, 1])]
+
+# Additional steps omitted for brevity...
