@@ -1,0 +1,1119 @@
+---
+title: "Data_creation"
+author: "Julien Roy"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+    theme: flatly
+    highlight: zenburn
+    code_folding: show
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(DESeq2)
+library(tidyr)
+library(apeglm)
+library(RColorBrewer)
+library(limma)
+library(sva)
+library(pheatmap)
+library(grid)
+library(reshape2)
+library(gtools)
+library(plotly)
+library(doParallel)
+
+# Set the working directory
+setwd("C:/Users/julie/OneDrive - Université Laval/Stage recherche/batch_short_communication_article/scripts")
+getwd()
+
+num_cores <- parallel::detectCores() - 1
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+```
+
+## Data Creation
+```{r dc}
+# Original colData generation (same as before)
+colData <- expand.grid(Cultivar = c("c1", "c2"),
+                       Sex = c("xx", "xy"),
+                       Day = c("0", "1"),
+                       Batch = c("a", "b"))
+
+# Assign Treatment based on rules
+colData$Treatment <- "ctrl"  # Default to control
+colData$Treatment[colData$Day == "1" & colData$Sex == "xy" & colData$Batch == "a"] <- "treat1"
+colData$Treatment[colData$Day == "1" & colData$Sex == "xx" & colData$Batch == "b"] <- "treat2"
+
+# Triple the samples
+colData <- colData[rep(1:nrow(colData), each = 3), ]
+
+# Reset row names to avoid fractional indices
+rownames(colData) <- NULL
+
+# Add unique Sample IDs
+colData$SampleID <- paste0("Sample", 1:nrow(colData))
+
+# Reorder columns for clarity
+colData <- colData[, c("SampleID", "Cultivar", "Sex", "Day", "Batch", "Treatment")]
+colData$Treatment <- as.factor(colData$Treatment)
+
+# Display the result
+print(colData)
+```
+
+```{r batch_design}
+# create new colData to account for a, b, c batch design
+colData_abc <- colData
+colData_abc$Batch <- as.character(colData_abc$Batch)
+colData_abc$Batch <- ifelse(colData_abc$Sex == "xy" & colData_abc$Batch == "b", "c", colData_abc$Batch)
+colData_abc$Treatment <- as.factor(colData_abc$Treatment)
+
+# Display the result
+print(colData_abc)
+```
+
+
+```{r}
+# Parameters
+set.seed(750)
+n_genes <- 1000  # Number of genes
+n_samples <- nrow(colData)  # Number of samples (columns)
+min_baseline <- 100  # Minimum value for uniform random baseline
+max_baseline <- 100  # Maximum value for uniform random baseline
+baseline <- 100
+
+row_baselines <- rnorm(n_genes, mean = baseline, sd = 25) # Generate one random number per row
+#row_baselines <- runif(n_genes, min = min_baseline, max = max_baseline)
+hist(row_baselines, main = "Frequency of baselines (start)", 
+     xlab = "Counts", 
+     ylab = "Frequency", 
+     col = "skyblue", 
+     breaks = 50)
+
+min(row_baselines)
+max(row_baselines)
+
+half_normal <- abs(rnorm(n_genes, mean = 0, sd = 1.25))
+row_baselines <- (row_baselines * (1+half_normal))
+hist(row_baselines, main = "Frequency of baselines (corrected)", 
+     xlab = "Counts", 
+     ylab = "Frequency", 
+     col = "skyblue", 
+     breaks = 50)
+
+```
+
+```{r}
+set.seed(750)
+# create design matrix
+design_matrix <- model.matrix(~ Treatment + Day + Batch + Sex + Cultivar + Sex:Batch + Sex:Day, data = colData)
+n_factors <- ncol(design_matrix)
+
+fold_changes <- matrix(rnorm(n_factors * n_genes, mean = 0, sd = 0.5), nrow = n_factors, ncol = n_genes)
+fold_changes <- fold_changes * (abs(fold_changes))
+
+#play with values of foldchange to get PCA of interest
+fold_changes[1, ] <- fold_changes[1, ] * 0 #intercept
+fold_changes[2, ] <- fold_changes[2, ] * 0.9 #trt1
+fold_changes[3, ] <- fold_changes[3, ] * 0.9 #trt2
+fold_changes[4, ] <- fold_changes[4, ] * 0.9 #day
+fold_changes[6, ] <- fold_changes[6, ] * 1 #sex
+fold_changes[7, ] <- fold_changes[7, ] * 0.8 #cultivar
+fold_changes[8, ] <- fold_changes[8, ] * 1.2 #batch:sex
+fold_changes[9, ] <- fold_changes[9, ] * 0.9 #day:sex
+
+# Sum each row using absolute values
+#row_sums <- apply(fold_changes, 1, function(row) sum(abs(row)))
+#print(row_sums)
+
+#write.csv(fold_changes, file = "fold_changes.csv")
+#fold_changes_modified <- read.csv(file = "fold_changes_modified.csv")
+#fold_changes_modified <- as.matrix(fold_changes_modified)
+
+# Create the gene_expression matrix by replicating each row baseline across all columns
+gene_expression <- matrix(rep(row_baselines, each = n_samples), nrow = n_genes, ncol = n_samples, byrow = TRUE)
+
+rownames(gene_expression) <- paste0("G", 1:n_genes)
+
+# Ensure each gene count gets slightly modified while preserving overall trends to distinguish between identical samples
+random_factors <- matrix(rnorm(n = nrow(gene_expression) * ncol(gene_expression), mean = 0, sd = 0.3), nrow = nrow(gene_expression), ncol = ncol(gene_expression))
+max(random_factors)
+min(random_factors)
+
+# Apply the variation
+gene_expression <- (gene_expression * exp(random_factors))
+max(gene_expression)
+min(gene_expression)
+
+#colnames(gene_expression) <- colData$SampleID
+#write.csv(gene_expression, file = "gene_expression.csv")
+#write.csv(design_matrix, file = "design_matrix.csv", row.names = FALSE)
+
+# Apply fold changes to the baseline expression
+# Apply fold changes to the baseline expression
+for (i in 1:nrow(colData)) {
+  sample_id <- rownames(colData)[i]
+  design_vector <- as.numeric(design_matrix[sample_id, ])
+  
+  # Compute the fold change effect for each gene
+  gene_fold_effects <- colSums(sweep(fold_changes, 1, design_vector, "*"))
+  
+  # Apply the fold changes to the baseline
+  gene_expression[, i] <- gene_expression[, i] * 2^(gene_fold_effects)
+}
+
+hist(random_factors, main = "Frequency of factors 1 (noise)", 
+     xlab = "Counts", 
+     ylab = "Frequency", 
+     col = "skyblue", 
+     breaks = 50)
+
+hist(fold_changes, 
+     main = "Frequency of Fold Changes", 
+     xlab = "FC", 
+     ylab = "Frequency", 
+     col = "skyblue", 
+     breaks = 50)
+
+max(gene_expression)
+min(gene_expression)
+max(fold_changes)
+min(fold_changes)
+
+random_factors_2 <- matrix(rnorm(n = nrow(gene_expression) * ncol(gene_expression), mean = 0, sd = 0.3), nrow = nrow(gene_expression), ncol = ncol(gene_expression))
+max(random_factors_2)
+min(random_factors_2)
+
+hist(exp(random_factors_2), main = "Frequency of factors 2 (noise)", 
+     xlab = "Counts", 
+     ylab = "Frequency", 
+     col = "skyblue", 
+     breaks = 50)
+
+gene_expression <- (gene_expression * exp(random_factors_2))
+
+gene_expression[gene_expression < 0] <- 0
+
+gene_expression <- round(gene_expression)
+max(gene_expression)
+min(gene_expression)
+
+```
+
+
+
+```{r deseq}
+# Construct the design
+design <- ~ Day + Batch + Cultivar + Sex + Sex:Batch + Sex:Day + Treatment
+
+# construct a DESeqDataSet object
+dds <- DESeqDataSetFromMatrix(countData = gene_expression,
+                                  colData = colData,
+                                  design = design)
+
+# Define reference value for each factor (needed for simplicity, helps calling for contrasts)
+dds$Cultivar <- relevel(dds$Cultivar, ref = "c1")
+dds$Sex <- relevel(dds$Sex, ref = "xx")
+dds$Batch <- relevel(dds$Batch, ref = "a")
+dds$Day <- relevel(dds$Day, ref = "0")
+dds$Treatment <- relevel(dds$Treatment, ref = "ctrl")
+
+# Run DESeq
+dds <- DESeq(dds)
+
+# check sizefactors
+sizeFactors(dds)
+```
+
+```{r deseq_alt}
+# Construct the design
+design_alt <- ~ Day + Batch + Cultivar + Sex + Sex:Day + Treatment
+
+# construct a DESeqDataSet object
+dds_alt <- DESeqDataSetFromMatrix(countData = gene_expression,
+                                  colData = colData,
+                                  design = design_alt)
+
+# Define reference value for each factor (needed for simplicity, helps calling for contrasts)
+dds_alt$Cultivar <- relevel(dds$Cultivar, ref = "c1")
+dds_alt$Sex <- relevel(dds$Sex, ref = "xx")
+dds_alt$Batch <- relevel(dds$Batch, ref = "a")
+dds_alt$Day <- relevel(dds$Day, ref = "0")
+dds_alt$Treatment <- relevel(dds$Treatment, ref = "ctrl")
+
+# Run DESeq
+dds_alt <- DESeq(dds_alt)
+
+```
+
+```{r}
+# Sum counts across all samples for each gene
+counts_hist <- counts(dds, normalized = FALSE) #normalisation changed some values
+gene_expression_df <- as.data.frame(gene_expression)
+
+# Convert dataframe to long format
+counts_hist_df <- as.data.frame(counts_hist)
+counts_long <- counts_hist_df %>%
+  pivot_longer(cols = everything(), names_to = "Sample", values_to = "Value")
+
+# check concistency
+result <- gene_expression_df - counts_hist_df
+max(result)
+min(result)
+
+# Plot histogram
+plot <- ggplot(counts_long, aes(x = Value)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black") +
+  scale_x_log10() +  # Log scale on y-axis
+  labs(x = "Gene Expression Values (log10)", y = "Count", title = "Histogram of All Values") + 
+  theme_minimal()
+plot
+
+```
+
+```{r samples_0}
+# Identify samples to keep in two additionnal dds objects for separate PCAs
+samples_to_keep <- colData(dds)$Day == "0"
+```
+
+```{r PCA}
+# Subset the dds_filtered object to include only the samples without "Day" == "14"
+dds_day0 <- dds[, samples_to_keep]
+
+#Perfom VST
+vsd_0 <- vst(dds_day0, blind = TRUE)
+
+# Access the colData from the DESeqTransform object in order to add a grouping column (for sample visualisation)
+colData_vsd_0 <- as.data.frame(colData(vsd_0))
+
+# Create a new column by concatenating the "Sex", "Day", and "Treatment" columns
+colData_vsd_0$Group <- paste(colData_vsd_0$Batch, colData_vsd_0$Sex, sep = "_")
+
+# Update the colData in the vsd_interest object with the new column
+colData(vsd_0) <- DataFrame(colData_vsd_0)
+
+# Define custom order for groups
+custom_order <- c("a_xx", "b_xx", 
+                  "a_xy", "b_xy")
+
+# Create PCA data
+pcaData_0 <- plotPCA(vsd_0, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+
+# Calculate the percentage of variance explained
+percentVar <- round(100 * attr(pcaData_0, "percentVar"))
+
+# Ensure the Group column in pcaData is a factor with the correct levels
+pcaData_0$Group <- factor(pcaData_0$Group, levels = custom_order)
+
+# Define custom labels for groups
+custom_labels <- c("XX batch A", "XX batch B",
+                   "XY batch A", "XY batch B")
+
+# Define an RColorBrewer palette
+palette_colors <- brewer.pal(min(12, length(unique(pcaData_0$Group))), "Dark2") # Adjusted for group count
+
+# PCA plot with ordered groups and custom labels
+pca_plot <- ggplot(pcaData_0, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+  geom_point(aes(shape = Cultivar), size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  scale_color_manual(values = palette_colors, labels = custom_labels) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  theme(
+    panel.background = element_blank(),        # Remove background
+    panel.grid.major = element_blank(),          # Remove major grid lines
+    panel.grid.minor = element_blank(),          # Remove minor grid lines
+    axis.line = element_line()                   # Show axis lines
+  )
+
+print(pca_plot)
+
+```
+
+```{r PCA2}
+#Perfom VST
+vsd <- vst(dds, blind = FALSE)
+
+# Access the colData from the DESeqTransform object in order to add a grouping column (for sample visualisation)
+colData_vsd <- as.data.frame(colData(vsd))
+
+# Create a new column by concatenating the "Sex", "Day", and "Treatment" columns
+colData_vsd$Group <- paste(colData_vsd$Batch, colData_vsd$Sex, colData_vsd$Day, colData_vsd$Treatment, sep = "_")
+
+# Update the colData in the vsd_interest object with the new column
+colData(vsd) <- DataFrame(colData_vsd)
+
+# Define custom order for groups
+custom_order <- c("a_xx_0_ctrl", "b_xx_0_ctrl", 
+                  "a_xy_0_ctrl", "b_xy_0_ctrl",
+                  "a_xx_1_ctrl", "b_xx_1_treat2", 
+                  "a_xy_1_treat1", "b_xy_1_ctrl")
+
+# Create PCA data
+pcaData <- plotPCA(vsd, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+
+# Calculate the percentage of variance explained
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+# Ensure the Group column in pcaData is a factor with the correct levels
+pcaData$Group <- factor(pcaData$Group, levels = custom_order)
+
+# Define custom labels for groups
+custom_labels <- c("Ctrl XX Batch A Day 0", "Ctrl XX Batch B Day 0",
+                   "Ctrl XY Batch A Day 0", "Ctrl XY Batch B Day 0",
+                   "Ctrl XX Batch A Day 1", "Treat. XX Batch B Day 1",
+                   "Treat. XY Batch A Day 1", "Ctrl XY Batch B Day 1")
+
+# Define an RColorBrewer palette
+palette_colors <- brewer.pal(min(12, length(unique(pcaData$Group))), "Dark2") # Adjusted for group count
+
+# PCA plot with ordered groups and custom labels
+pca_plot <- ggplot(pcaData, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+  geom_point(aes(shape = Cultivar), size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  scale_color_manual(values = palette_colors, labels = custom_labels) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  theme(
+    panel.background = element_blank(),        # Remove background
+    panel.grid.major = element_blank(),          # Remove major grid lines
+    panel.grid.minor = element_blank(),          # Remove minor grid lines
+    axis.line = element_line()                   # Show axis lines
+  )
+
+print(pca_plot)
+
+```
+
+```{r correction_double}
+resultsNames(dds)
+
+# Simple call for batch effects
+batch_xx <- results(dds, name = "Batch_b_vs_a", independentFiltering = FALSE)
+batch_xx <- as.data.frame(batch_xx)
+batch_xy <- results(dds, contrast=list(c("Batch_b_vs_a","Batchb.Sexxy")), independentFiltering = FALSE)
+batch_xy <- as.data.frame(batch_xy)
+
+# Add columns for scaling factors
+batch_xx$Scaling_Factor_Batch_A <- sqrt(2^(batch_xx$log2FoldChange))
+batch_xx$Scaling_Factor_Batch_B <- 1 / batch_xx$Scaling_Factor_Batch_A
+
+batch_xy$Scaling_Factor_Batch_A <- sqrt(2^(batch_xy$log2FoldChange))
+batch_xy$Scaling_Factor_Batch_B <- 1 / batch_xy$Scaling_Factor_Batch_A
+
+# Extract normalized counts of genes
+normalized_counts_df <- as.data.frame(counts(dds, normalized = TRUE))
+colnames(normalized_counts_df) <- gsub("^V", "", colnames(normalized_counts_df))
+
+# Create a copy of normalized counts to apply scaling
+scaled_counts <- normalized_counts_df
+
+# Iterate through each sample in normalized_counts_df
+for (Sample_ID in colnames(normalized_counts_df)) {
+  
+  # Get the 'sex' and 'batch' information for the current sample
+  Sex <- colData[Sample_ID, "Sex"]
+  Batch <- colData[Sample_ID, "Batch"]
+  
+  # Determine the scaling factor column based on 'sex' and 'batch'
+  if (Sex == "xx" && Batch == "a") {
+    scaling_factors <- batch_xx$Scaling_Factor_Batch_A
+  } else if (Sex == "xx" && Batch == "b") {
+    scaling_factors <- batch_xx$Scaling_Factor_Batch_B
+  } else if (Sex == "xy" && Batch == "a") {
+    scaling_factors <- batch_xy$Scaling_Factor_Batch_A
+  } else if (Sex == "xy" && Batch == "b") {
+    scaling_factors <- batch_xy$Scaling_Factor_Batch_B
+  }
+  
+  # Apply the scaling factor to each gene for the current sample
+  # Match genes by their rownames in normalized_counts_df and the scaling factors
+  scaled_counts[, Sample_ID] <- normalized_counts_df[, Sample_ID] * scaling_factors
+}
+
+#batch_list <- batch_df$log2FoldChange
+#write.csv(batch_list, file = "batch_list.csv")
+
+```
+
+```{r correction_single}
+resultsNames(dds_alt)
+
+# Simple call for batch effects
+batch_all <- results(dds_alt, name = "Batch_b_vs_a", independentFiltering = FALSE)
+batch_all <- as.data.frame(batch_all)
+
+# Add columns for scaling factors
+batch_all$Scaling_Factor_Batch_A <- sqrt(2^(batch_all$log2FoldChange))
+batch_all$Scaling_Factor_Batch_B <- 1 / batch_all$Scaling_Factor_Batch_A
+
+# Extract initial counts of genes
+normalized_counts_alt_df <- as.data.frame(counts(dds_alt, normalized = TRUE))
+colnames(normalized_counts_alt_df) <- gsub("^V", "", colnames(normalized_counts_alt_df))
+
+# Create a copy of normalized counts to apply scaling
+scaled_counts_alt <- normalized_counts_alt_df
+
+# Iterate through each sample in normalized_counts_df
+for (Sample_ID in colnames(normalized_counts_alt_df)) {
+  
+  # Get the 'batch' information for the current sample
+  Batch <- colData[Sample_ID, "Batch"]
+  
+  # Determine the scaling factor column based on 'sex' and 'batch'
+  if (Batch == "a") {
+    scaling_factors <- batch_all$Scaling_Factor_Batch_A
+  } else if (Batch == "b") {
+    scaling_factors <- batch_all$Scaling_Factor_Batch_B
+  }
+  
+  # Apply the scaling factor to each gene for the current sample
+  # Match genes by their rownames in normalized_counts_df and the scaling factors
+  scaled_counts_alt[, Sample_ID] <- normalized_counts_alt_df[, Sample_ID] * scaling_factors
+}
+
+#batch_list <- batch_df$log2FoldChange
+#write.csv(batch_list, file = "batch_list.csv")
+
+```
+
+```{r qa_double}
+# QA SECTION
+# Two steps :
+# 1 : re-run DESeq2 with the new scaled counts, we expect LFC for Batch and Batch interaction to be close to 0 for all genes.
+# 2 : Plot PCA of day 0 data.
+
+# Re-run DESeq2
+# Since it expects integer, convert scaled counts to integers
+scaled_counts_rounded <- round(scaled_counts)
+
+dds_scaled <- DESeqDataSetFromMatrix(countData = scaled_counts_rounded,
+                              colData = colData,
+                              design = design)
+
+# Run DESeq2
+dds_scaled <-DESeq(dds_scaled)
+
+sizeFactors(dds_scaled)
+
+# Check LFC with corrected data
+res_batch_XX_corrected <- results(dds_scaled, name = "Batch_b_vs_a", independentFiltering = FALSE) # batch effect on XX
+res_batch_XY_corrected <- results(dds_scaled, contrast=list(c("Batch_b_vs_a","Batchb.Sexxy")), independentFiltering = FALSE) # batch effect on XY (batch + interaction term)
+
+# Change to dataframe
+res_batch_XX_corrected <- as.data.frame(res_batch_XX_corrected)
+res_batch_XY_corrected <- as.data.frame(res_batch_XY_corrected)
+
+head(res_batch_XX_corrected[,c(1,6)])
+head(res_batch_XY_corrected[,c(1,6)])
+# All genes are 0.999 adjusted p value. Some are p-value significant but with very low counts
+```
+
+```{r qa_single}
+# QA SECTION
+# Two steps :
+# 1 : re-run DESeq2 with the new scaled counts, we expect LFC for Batch and Batch interaction to be close to 0 for all genes.
+# 2 : Plot PCA of day 0 data.
+
+# Re-run DESeq2
+# Since it expects integer, convert scaled counts to integers
+scaled_counts_alt_rounded <- round(scaled_counts_alt)
+
+dds_alt_scaled <- DESeqDataSetFromMatrix(countData = scaled_counts_alt_rounded,
+                              colData = colData,
+                              design = design_alt)
+
+# Run DESeq2
+dds_alt_scaled <-DESeq(dds_alt_scaled)
+
+# Check LFC with corrected data
+res_batch_alt_corrected <- results(dds_alt_scaled, name = "Batch_b_vs_a", independentFiltering = FALSE)
+
+# Change to dataframe
+res_batch_alt_corrected <- as.data.frame(res_batch_alt_corrected)
+
+head(res_batch_alt_corrected[,c(1,6)])
+# All genes are 0.999 adjusted p value. Some are p-value significant but with very low counts
+```
+
+
+```{r limma}
+# Construct the design
+design_nobatch <- ~ Day + Cultivar + Sex + Sex:Day + Treatment
+
+# construct a DESeqDataSet object
+dds_single_nobatch <- DESeqDataSetFromMatrix(countData = scaled_counts_alt_rounded,
+                                  colData = colData,
+                                  design = design_nobatch)
+
+dds_double_nobatch <- DESeqDataSetFromMatrix(countData = scaled_counts_rounded,
+                                  colData = colData,
+                                  design = design_nobatch)
+
+# Perform VST transformation
+vsd <- vst(dds, blind = FALSE)
+vsd_scaled_single <- vst(dds_single_nobatch, blind = FALSE)
+vsd_scaled_double <- vst(dds_double_nobatch, blind = FALSE)
+
+# create vsd for limma to operate on
+normalized_counts_matrix <- as.matrix(round(normalized_counts_df))
+vsd_matrix <- vst(normalized_counts_matrix)
+
+# need design as matrix
+design_matrix_limma_full <- model.matrix(~ Day + Cultivar + Sex + Sex:Day + Treatment, data = colData)
+design_matrix_limma_full_abc <- model.matrix(~ Day + Cultivar + Sex + Sex:Day + Treatment, data = colData_abc)
+
+# use limma
+vsd_limma_matrix <- removeBatchEffect(vsd_matrix, batch = colData$Batch, design = design_matrix_limma_full)
+vsd_limma_matrix_abc <- removeBatchEffect(vsd_matrix, batch = colData_abc$Batch, design = design_matrix_limma_full_abc)
+
+vsd_limma <- vsd_scaled_single
+vsd_limma_abc <- vsd_scaled_double
+assay(vsd_limma) <- vsd_limma_matrix
+assay(vsd_limma_abc) <- vsd_limma_matrix_abc
+
+# use combat
+combat_data_full <- ComBat_seq(counts = normalized_counts_matrix, batch = colData$Batch, covar_mod = design_matrix_limma_full, full_mod = TRUE)
+combat_data_abc <- ComBat_seq(counts = normalized_counts_matrix, batch = colData_abc$Batch, covar_mod = design_matrix_limma_full_abc, full_mod = TRUE)
+
+vsd_combat_full <- vst(combat_data_full)
+vsd_combat_abc <- vst(combat_data_abc)
+
+vsd_combat_single <- vsd_scaled_single
+vsd_combat_double <- vsd_scaled_double
+assay(vsd_combat_single) <- vsd_combat_full
+assay(vsd_combat_double) <- vsd_combat_abc
+
+```
+
+
+```{r PCA_plots, message=FALSE}
+# Perform VST transformation
+#vsd_combat_0 <- vst(dds_combat_0, blind = TRUE)
+
+# filter for day 0 samples
+filtered_samples <- colData(vsd)$Day == "0"
+vsd_filtered <- vsd[, filtered_samples]
+vsd_single_filtered <- vsd_scaled_single[, filtered_samples]
+vsd_double_filtered <- vsd_scaled_double[, filtered_samples]
+vsd_limma_filtered <- vsd_limma[, filtered_samples]
+vsd_limma_abc_filtered <- vsd_limma_abc[, filtered_samples]
+vsd_combat_single_filtered <- vsd_combat_single[, filtered_samples]
+vsd_combat_double_filtered <- vsd_combat_double[, filtered_samples]
+```
+
+
+```{r PCA_function, message=FALSE}
+# Create function for PCA
+create_pca <- function(vsd, plot_title) {
+  
+  # Create a grouping column in the colData for sample visualization
+  colData_vsd <- as.data.frame(colData(vsd))
+  colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Batch, sep = "_")
+  colData(vsd) <- DataFrame(colData_vsd)
+  
+  # Define custom order for groups
+  custom_order <- c("xx_a", "xx_b", "xy_a", "xy_b")
+  
+  # Generate PCA data
+  pcaData <- plotPCA(vsd, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+  
+  # Calculate the percentage of variance explained for PC1 and PC2
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  
+  # Ensure the Group column in pcaData is a factor with the correct levels
+  pcaData$Group <- factor(pcaData$Group, levels = custom_order)
+  
+  # Define custom labels for groups
+  custom_labels <- c("XX A", "XX B",
+                   "XY A", "XY B")
+  
+  # Define an RColorBrewer palette
+  palette_colors <- brewer.pal(4, "Dark2")
+  
+  # Create PCA plot using ggplot2
+  pca_plot <-
+    ggplot(pcaData, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+    geom_point(aes(shape = Cultivar), size = 5) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    coord_fixed(ratio = 1, xlim = c(-16, 16), ylim = c(-16, 16)) +
+    ggtitle(plot_title) +
+    theme(plot.title = element_text(hjust = 0.3)) +
+    scale_color_manual(values = palette_colors, labels = custom_labels) +
+    guides(color = guide_legend(override.aes = list(size = 3))) +
+  theme(
+    panel.background = element_blank(),        # Remove background
+    panel.grid.major = element_blank(),          # Remove major grid lines
+    panel.grid.minor = element_blank(),          # Remove minor grid lines
+    axis.line = element_line()                   # Show axis lines
+  )
+  
+  return(pca_plot)
+}
+```
+
+```{r PCA_function_full}
+# Create function for PCA
+create_pca_all <- function(vsd, plot_title) {
+  
+  # Create a grouping column in the colData for sample visualization
+  colData_vsd <- as.data.frame(colData(vsd))
+  colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Batch, colData_vsd$Day, sep = "_")
+  colData(vsd) <- DataFrame(colData_vsd)
+  
+  # Define custom order for groups
+  custom_order <- c("xx_a_0", "xx_b_0", "xy_a_0", "xy_b_0", "xx_a_1", "xx_b_1", "xy_a_1", "xy_b_1")
+  
+  # Generate PCA data
+  pcaData <- plotPCA(vsd, intgroup = c("Group", "Cultivar"), returnData = TRUE)
+  
+  # Calculate the percentage of variance explained for PC1 and PC2
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  
+  # Ensure the Group column in pcaData is a factor with the correct levels
+  pcaData$Group <- factor(pcaData$Group, levels = custom_order)
+  
+  # Define custom labels for groups
+  custom_labels <- c("XX A 0", "XX B 0",
+                   "XY A 0", "XY B 0",
+                   "XX A 1 c", "XX B 1 t",
+                   "XY A 1 t", "XY B 1 c")
+  
+  # Define an RColorBrewer palette
+  palette_colors <- brewer.pal(8, "Dark2")
+  
+  # Create PCA plot using ggplot2
+  pca_plot <-
+    ggplot(pcaData, aes(x = PC1, y = PC2, color = Group, group = Group)) +
+    geom_point(aes(shape = Cultivar), size = 5) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    coord_fixed(ratio = 1, xlim = c(-18, 18), ylim = c(-18, 18)) +
+    ggtitle(plot_title) +
+    theme(plot.title = element_text(hjust = 0.3)) +
+    scale_color_manual(values = palette_colors, labels = custom_labels) +
+    guides(color = guide_legend(override.aes = list(size = 3))) +
+  theme(
+    panel.background = element_blank(),        # Remove background
+    panel.grid.major = element_blank(),          # Remove major grid lines
+    panel.grid.minor = element_blank(),          # Remove minor grid lines
+    axis.line = element_line()                   # Show axis lines
+  )
+  
+  return(pca_plot)
+}
+```
+
+
+```{r PCA_0, message=FALSE}
+# Use the function
+# uncorrected
+pca_plot <- create_pca(vsd_filtered, "PCA of VSD, day 0 before correction")
+# single corrected
+pca_plot_single <- create_pca(vsd_single_filtered, "PCA of VSD, day 0 single batch corrected")
+# double corrected
+pca_plot_double <- create_pca(vsd_double_filtered, "PCA of VSD, day 0 double batch corrected")
+# and limma
+pca_plot_limma <- create_pca(vsd_limma_filtered, "PCA of VSD, day 0, limma single full")
+pca_plot_limma_abc <- create_pca(vsd_limma_abc_filtered, "PCA of VSD, day 0, limma double full")
+# and combat
+pca_plot_combat <- create_pca(vsd_combat_single_filtered, "PCA of VSD, day 0, combat single")
+pca_plot_combat_abc <- create_pca(vsd_combat_double_filtered, "PCA of VSD, day 0 combat double")
+
+pca_plot
+pca_plot_single
+pca_plot_double
+
+pca_plot_limma
+pca_plot_limma_abc
+
+pca_plot_combat
+pca_plot_combat_abc
+```
+
+
+```{r PCA_1_save, message=FALSE}
+# WATCH OUT DO NOT OVERWRITE
+#ggsave("pca_plot.svg", plot = pca_plot, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_single.svg", plot = pca_plot_single, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_double.svg", plot = pca_plot_double, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_limma.svg", plot = pca_plot_limma, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_limma_abc.svg", plot = pca_plot_limma_abc, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_combat.svg", plot = pca_plot_combat, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_combat_abc.svg", plot = pca_plot_combat_abc, width = 5, height = 4, device = "svg")
+```
+
+```{r PCA_all}
+# Use the function
+# uncorrected
+pca_plot_all <- create_pca_all(vsd, "PCA of VSD, before correction")
+# single corrected
+pca_plot_single_all <- create_pca_all(vsd_scaled_single, "PCA of VSD, single batch corrected")
+# double corrected
+pca_plot_double_all <- create_pca_all(vsd_scaled_double, "PCA of VSD, double batch corrected")
+# and limma
+pca_plot_limma_all <- create_pca_all(vsd_limma, "PCA of VSD, limma single")
+pca_plot_limma_abc_all <- create_pca_all(vsd_limma_abc, "PCA of VSD, limma double")
+# and combat
+pca_plot_combat_all <- create_pca_all(vsd_combat_single, "PCA of VSD, combat single")
+pca_plot_combat_abc_all <- create_pca_all(vsd_combat_double, "PCA of VSD, combat double")
+
+pca_plot_all
+pca_plot_single_all
+pca_plot_double_all
+
+pca_plot_limma_all
+pca_plot_limma_abc_all
+
+pca_plot_combat_all
+pca_plot_combat_abc_all
+```
+
+
+```{r PCA_2_save, message=FALSE}
+# WATCH OUT DO NOT OVERWRITE
+#ggsave("pca_plot_all.svg", plot = pca_plot_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_single_all.svg", plot = pca_plot_single_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_double_all.svg", plot = pca_plot_double_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_limma_all.svg", plot = pca_plot_limma_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_limma_abc_all.svg", plot = pca_plot_limma_abc_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_combat_all.svg", plot = pca_plot_combat_all, width = 5, height = 4, device = "svg")
+#ggsave("pca_plot_combat_abc_all.svg", plot = pca_plot_combat_abc_all, width = 5, height = 4, device = "svg")
+
+```
+
+```{r gene_list}
+# new contrast as test
+batch_main <- results(dds, name = "Batch_b_vs_a", independentFiltering = FALSE)
+batch_main <- as.data.frame(batch_main)
+batch_int <- results(dds, name = "Batchb.Sexxy", independentFiltering = FALSE)
+batch_int <- as.data.frame(batch_int)
+
+add_lfc <- merge(batch_int, batch_main, by = "row.names", suffixes = c("_df1", "_df2"))
+# Rename the row.names column to "Gene"
+colnames(add_lfc)[1] <- "Gene"
+
+# Convert Gene column to a factor with levels ordered numerically
+add_lfc$Gene <- factor(add_lfc$Gene, levels = mixedsort(add_lfc$Gene)) 
+
+# Reorder the dataframe based on the Gene column
+add_lfc <- add_lfc[order(add_lfc$Gene), ]
+
+# Reset row names
+rownames(add_lfc) <- add_lfc$Gene
+
+# Remove the extra "Gene" column if no longer needed
+add_lfc$Gene <- NULL
+
+#Then
+add_lfc$log2FoldChange_sum <- abs(add_lfc$log2FoldChange_df1) + abs(add_lfc$log2FoldChange_df2)
+add_lfc <- add_lfc[, "log2FoldChange_sum", drop = FALSE]
+
+# Get the top absolute values
+both_genes <- rownames(add_lfc)[order(abs(add_lfc$log2FoldChange_sum), decreasing = TRUE)][1:3]
+both_genes # as abs values, can be high yet yield 0 change in males (xy)
+int_genes <- rownames(batch_int)[order(abs(batch_int$log2FoldChange), decreasing = TRUE)][1:3]
+int_genes #effect specific to male (batch:sex)
+main_genes <- rownames(batch_main)[order(abs(batch_main$log2FoldChange), decreasing = TRUE)][1:3]
+main_genes #should be same as females
+
+# select top genes from 3 conditions
+xx_genes <- rownames(batch_xx)[order(abs(batch_xx$log2FoldChange), decreasing = TRUE)][1:3]
+xy_genes <- rownames(batch_xy)[order(abs(batch_xy$log2FoldChange), decreasing = TRUE)][1:3]
+
+
+#print(main_genes) #XX
+print(xx_genes) #XX
+print(xy_genes) #XY
+
+gene_list <- union(union(xx_genes, xy_genes), int_genes)
+print(gene_list)
+
+```
+
+
+```{r heatmap}
+gene_list_ordered <- c("G16", "G532", "G903", "G992", "G625", "G806", "G535", "G839")
+
+# Define the function with gene ordering (gene_list is always provided)
+create_heatmap <- function(vsd, title) {
+  # Extract the assay data and use only the genes in the provided list, in the specified order.
+  vsd_data <- assay(vsd)
+  vsd_data <- vsd_data[rownames(vsd_data) %in% gene_list_ordered, , drop = FALSE]
+  vsd_data <- vsd_data[match(gene_list_ordered, rownames(vsd_data)), , drop = FALSE]
+  
+  # Access the colData from the vsd object and add a grouping column.
+  colData_vsd <- as.data.frame(colData(vsd))
+  colData_vsd$Group <- paste(colData_vsd$Sex, colData_vsd$Batch, sep = "_")
+  colData(vsd) <- DataFrame(colData_vsd)
+  
+  # Create an annotation data frame for the heatmap.
+  annotation_col <- as.data.frame(colData(vsd)[, c("Group", "Cultivar")])
+  rownames(annotation_col) <- colnames(vsd_data)
+  
+  # Define custom order for the Group factor (for column ordering).
+  custom_order <- c("xx_a", "xx_b", "xy_a", "xy_b")
+  
+  # Order the samples by the custom Group factor levels.
+  ordered_sample_indices <- order(factor(annotation_col$Group, levels = custom_order))
+  vsd_data_ordered <- vsd_data[, ordered_sample_indices]
+  annotation_col_ordered <- annotation_col[ordered_sample_indices, ]
+  
+  # Load RColorBrewer and define color palettes for annotations.
+  library(RColorBrewer)
+  num_treatments <- 4
+  group_colors <- brewer.pal(n = num_treatments, name = "Dark2")
+  cultivar_colors <- brewer.pal(n = 8, name = "Dark2")[5:6]
+  
+  annotation_colors <- list(
+    Group = setNames(group_colors, unique(annotation_col_ordered$Group)),
+    Cultivar = setNames(cultivar_colors, unique(annotation_col_ordered$Cultivar))
+  )
+  
+  # Optionally, assign custom labels for the Group factor.
+  custom_labels <- c("XX A", "XX B", "XY A", "XY B")
+  annotation_col$Group <- factor(annotation_col$Group, 
+                                 levels = custom_order, 
+                                 labels = custom_labels)
+  
+  # Generate the heatmap with row clustering disabled.
+  heatmap <- pheatmap(vsd_data_ordered,
+                      cluster_rows = FALSE,
+                      treeheight_row  = 0,
+                      cluster_cols = FALSE,
+                      show_rownames = FALSE,
+                      show_colnames = FALSE,
+                      annotation_col = annotation_col_ordered,
+                      annotation_colors = annotation_colors,
+                      scale = "row",
+                      main = title,
+                      fontsize_row = 10,
+                      fontsize_col = 8,
+                      color = colorRampPalette(c("navy", "white", "firebrick3"))(50),
+                      border_color = NA)
+  
+  return(heatmap)
+}
+
+# Use the function
+# uncorrected
+heatmap <- create_heatmap(vsd_filtered, "Heatmap before correction")
+# alt version
+#heatmap_alt <- create_heatmap(vsd_matrix_filtered, "Heatmap before correction", gene_list)
+# single corrected
+heatmap_single <- create_heatmap(vsd_single_filtered, "Heatmap single batch corrected")
+# double corrected
+heatmap_double <- create_heatmap(vsd_double_filtered, "Heatmap double batch corrected")
+# and limma
+heatmap_limma_single <- create_heatmap(vsd_limma_filtered, "Heatmap limma single corrected")
+# and limma
+heatmap_limma_double <- create_heatmap(vsd_limma_abc_filtered, "Heatmap limma double corrected")
+# and combat
+heatmap_combat_single <- create_heatmap(vsd_combat_single_filtered, "Heatmap combat single corrected")
+# and combat
+heatmap_combat_double <- create_heatmap(vsd_combat_double_filtered, "Heatmap combat double corrected")
+```
+
+
+```{r heatmap_save}
+ggsave("heatmap.svg", plot = heatmap, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_double.svg", plot = heatmap_double, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_single.svg", plot = heatmap_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_limma_single.svg", plot = heatmap_limma_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_limma_double.svg", plot = heatmap_limma_double, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_combat_single.svg", plot = heatmap_combat_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_combat_double.svg", plot = heatmap_combat_double, width = 5, height = 2.5, device = "svg")
+```
+
+```{r figure_2}
+# Gene
+selected_gene <- "G992"
+
+# Filter colData for day 0 samples only
+colData_filtered <- colData %>% filter(Day == 0)
+colData_filtered$SampleID <- gsub("Sample", "", colData_filtered$SampleID)
+colnames(gene_expression_df) <- sub("^V", "", colnames(gene_expression_df))
+
+# Extract the expression values for the specific gene from each dataset
+counts_before <- gene_expression_df[selected_gene, colData_filtered$SampleID, drop = FALSE]
+counts_single <- scaled_counts_alt[selected_gene, colData_filtered$SampleID, drop = FALSE]
+counts_double <- scaled_counts[selected_gene, colData_filtered$SampleID, drop = FALSE]
+
+# Convert to dataframes
+counts_before <- data.frame(SampleID = colnames(counts_before), Count = as.numeric(counts_before), Correction = "Before")
+counts_single <- data.frame(SampleID = colnames(counts_single), Count = as.numeric(counts_single), Correction = "Single")
+counts_double <- data.frame(SampleID = colnames(counts_double), Count = as.numeric(counts_double), Correction = "Double")
+
+# Merge with sample metadata
+counts_all <- bind_rows(counts_before, counts_single, counts_double) %>%
+  left_join(colData_filtered, by = "SampleID") %>%
+  mutate(Group = paste(Sex, Batch, sep = "_"))
+
+# Define order of groups
+counts_all$Group <- factor(counts_all$Group, levels = c("xx_a", "xy_a", "xx_b", "xy_b"))
+  
+# Define order of Correction stages
+counts_all$Correction <- factor(counts_all$Correction, levels = c("Before", "Single", "Double"))
+
+# Create boxplot
+boxplot <- ggplot(counts_all, aes(x = interaction(Group, Correction), y = Count, fill = Group)) +
+  geom_boxplot() +
+  xlab("Correction") +
+  ylab("Gene Expression Count") +
+  ggtitle("Expression Before and After Corrections") +
+  theme_linedraw() +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.y = element_line(color = "grey"),
+        axis.line.x = element_line(color = "black"),
+        axis.line.y = element_line(color = "black"),
+        axis.title.x = element_blank(),  # Remove x-axis label
+        axis.title.y = element_blank(),  # Remove y-axis label
+        plot.title = element_blank()) +     # Remove plot title)
+  scale_fill_manual(values = brewer.pal(n = 4, name = "Dark2")) +
+  theme(axis.text.x = element_blank()) +
+  labs(fill = "Group") +  # Change legend title
+  scale_y_log10()
+
+# Example usage
+boxplot
+
+ggsave("boxplot.svg", plot = boxplot, width = 7, height = 3, device = "svg")
+
+```
+
+```{r comparison_padj}
+Trt1 <- results(dds, name = "Treatment_treat1_vs_ctrl", independentFiltering = FALSE)
+Trt1_cor <- results(dds_scaled, name = "Treatment_treat1_vs_ctrl", independentFiltering = FALSE)
+
+Trt1 <- as.data.frame(Trt1)
+Trt1_cor <- as.data.frame(Trt1_cor)
+
+# Define the function that compares two values based on their absolute magnitudes.
+scaleDifference <- function(a, b) {
+  return(max(abs(a), abs(b)) / min(abs(a), abs(b)))
+}
+
+# Compute padj_variation for each matching row using mapply
+padj_variation <- mapply(scaleDifference, Trt1$padj, Trt1_cor$padj)
+
+# Create a new dataframe with rownames and the padj_variation column
+padj_variation <- data.frame(padj_variation = padj_variation, row.names = (rownames(Trt1)))
+
+# Print the result
+print(padj_variation)
+
+ggplot(padj_variation, aes(x = padj_variation)) +
+  geom_histogram(fill = "steelblue", color = "black") +
+  xlab("Padj Variation") +
+  ylab("Frequency") +
+  ggtitle("Histogram of Padj Variation") +
+  theme_minimal() +
+  scale_x_log10()
+```
+
+```{r p_value_compare}
+# Construct the design
+design_compare <- ~ Day + Cultivar + Sex + Sex:Day + Treatment
+
+dds_combat <- DESeqDataSetFromMatrix(countData = combat_data_abc,
+                              colData = colData,
+                              design = design_compare)
+
+dds_own <- DESeqDataSetFromMatrix(countData = scaled_counts_rounded,
+                              colData = colData,
+                              design = design_compare)
+
+dds_single <- DESeqDataSetFromMatrix(countData = scaled_counts_alt_rounded,
+                              colData = colData,
+                              design = design_compare)
+
+dds_combat <- DESeq(dds_combat)
+dds_own <- DESeq(dds_own)
+dds_single <- DESeq(dds_single)
+
+res_original <- results(dds, name = "Treatment_treat2_vs_ctrl", independentFiltering = FALSE)
+res_original <- as.data.frame(res_original)
+
+res_combat <- results(dds_combat, name = "Treatment_treat2_vs_ctrl", independentFiltering = FALSE)
+res_combat <- as.data.frame(res_combat)
+
+res_own <- results(dds_own, name = "Treatment_treat2_vs_ctrl", independentFiltering = FALSE)
+res_own <- as.data.frame(res_own)
+
+res_single <- results(dds_single, name = "Treatment_treat2_vs_ctrl", independentFiltering = FALSE)
+res_single <- as.data.frame(res_single)
+
+# Add gene names as a column
+res_original$gene <- rownames(res_original)
+res_combat$gene <- rownames(res_combat)
+res_own$gene <- rownames(res_own)
+res_single$gene <- rownames(res_single)
+
+# Merge by gene
+merged_res1 <- inner_join(res_original, res_combat, by = "gene", suffix = c("_original", "_combat"))
+merged_res2 <- inner_join(res_original, res_own, by = "gene", suffix = c("_original", "_double"))
+merged_res3 <- inner_join(res_original, res_single, by = "gene", suffix = c("_original", "_single"))
+
+# Compute Pearson correlation
+r_val1 <- cor(merged_res1$pvalue_original, merged_res1$pvalue_combat, method = "pearson", use = "complete.obs")
+r_val2 <- cor(merged_res2$pvalue_original, merged_res2$pvalue_double, method = "pearson", use = "complete.obs")
+r_val3 <- cor(merged_res3$pvalue_original, merged_res3$pvalue_single, method = "pearson", use = "complete.obs")
+
+# Create the plot with the r value annotated
+plot_comp1 <- ggplot(merged_res1, aes(x = pvalue_original, y = pvalue_combat)) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Adj. p-value (Original)",
+    y = "Adj. p-value (Combat)",
+    title = "Comparison of Adj. P-values"
+  ) +
+  theme_minimal() +
+  annotate("text", x = 0.01, y = 0.8, label = paste0("r = ", round(r_val1, 5)), hjust = 0, size = 5)
+
+# Create the plot with the r value annotated
+plot_comp2 <- ggplot(merged_res2, aes(x = pvalue_original, y = pvalue_double)) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Adj. p-value (Original)",
+    y = "Adj. p-value (Double)",
+    title = "Comparison of Adj. P-values"
+  ) +
+  theme_minimal() +
+  annotate("text", x = 0.01, y = 0.8, label = paste0("r = ", round(r_val2, 5)), hjust = 0, size = 5)
+
+# Create the plot with the r value annotated
+plot_comp3 <- ggplot(merged_res3, aes(x = pvalue_original, y = pvalue_single)) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Adj. p-value (Original)",
+    y = "Adj. p-value (single)",
+    title = "Comparison of Adj. P-values"
+  ) +
+  theme_minimal() +
+  annotate("text", x = 0.01, y = 0.8, label = paste0("r = ", round(r_val3, 5)), hjust = 0, size = 5)
+
+plot_comp1
+plot_comp2
+plot_comp3
+
+```
+
+```{r parallel_stop}
+stopCluster(cl)
+registerDoSEQ()
+```
