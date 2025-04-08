@@ -7,6 +7,16 @@ Github content
 
 Summary of data + design experimental as a figure
 
+```{r heatmap_save}
+ggsave("heatmap.svg", plot = heatmap, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_double.svg", plot = heatmap_double, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_single.svg", plot = heatmap_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_limma_single.svg", plot = heatmap_limma_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_limma_double.svg", plot = heatmap_limma_double, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_combat_single.svg", plot = heatmap_combat_single, width = 5, height = 2.5, device = "svg")
+#ggsave("heatmap_combat_double.svg", plot = heatmap_combat_double, width = 5, height = 2.5, device = "svg")
+```
+
 Setup with DESeq2
 
 PCA plot before correction, explanations
