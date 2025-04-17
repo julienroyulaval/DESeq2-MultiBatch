@@ -32,13 +32,11 @@ The treatments were applied following Day 0 measurements but before Day 1 measur
 # Load data
 
 ```
-
 # load metadata
 coldata <- read.csv(file = "coldata.csv")
 
 # load counts
 counts <- read.csv(file = "counts.csv", row.names = 1)
-
 ```
 
 Samples are rows in the ColData, with variables as columns. In the count file, rows are genes with samples as columns.
