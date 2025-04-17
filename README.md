@@ -74,7 +74,7 @@ resultsNames(dds_single)
 resultsNames(dds_double)
 
 # single
-batch <- results(dds_alt, name = "Batch_b_vs_a", independentFiltering = FALSE)
+batch <- results(dds_single, name = "Batch_b_vs_a", independentFiltering = FALSE)
 batch <- as.data.frame(batch_all)
 
 batch$Scaling_Factor_Batch_A <- sqrt(2^(batch$log2FoldChange))
