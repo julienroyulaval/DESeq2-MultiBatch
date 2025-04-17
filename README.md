@@ -31,7 +31,7 @@ The treatments were applied following Day 0 measurements but before Day 1 measur
 
 # Load data
 
-```{r}
+```
 
 # load metadata
 coldata <- read.csv(file = "coldata.csv")
