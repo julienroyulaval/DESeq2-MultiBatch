@@ -1,7 +1,47 @@
 # DESeq2-MultiBatch
 Batch Correction for Multi-Factorial RNA-seq Experiments
 
+# Context
 
+Here, you will find detailed steps to reproduce the correction method implemented in "DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments".
+
+The HTML file provided focuses on methods of contrast calling to extract meaningful results in DESeq2 with examples, using various designs.
+
+If used in research, please cite:
+
+Roy, J., Monthony, A. S., Torkamaneh, D. (2025). DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments.
+
+For more information about DESeq2 and the standard RNA-seq analysis steps, refer to:
+
+- [Analyzing RNA-seq data with DESeq2](https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html)
+
+- [RNA-seq workflow: gene-level exploratory analysis and differential expression](https://bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html)
+
+## Experimental design
+
+The simulated dataset used in this study consists of 1,000 genes across 48 samples. The dataset is designed to be computationally efficient, with confirmed scalability to larger real-life datasets.
+
+The experimental design involves two batches, modeling gene expression in dioecious plants (e.g., XX/XY system) undergoing sex-specific treatments at two distinct time points: Day 0 (vegetative) and Day 1 (early flowering). Due to sex-specific treatments to alter flower sex, male and female plants were separated across batches:
+
+Batch 1: Female controls (n=6) and treated males (n=6)
+
+Batch 2: Male controls (n=6) and treated females (n=6)
+
+The treatments were applied following Day 0 measurements but before Day 1 measurements, allowing Day 0 data to serve as a baseline for controlling batch effects. Samples were collected across two genotypes, with three biological replicates per combination of sex, treatment, genotype, and time point.
+
+# Load data
+
+Counts + metadata
+
+Samples are rows in the ColData, with variables as columns. In the count file, rows are genes with samples as columns.
+
+Design
+
+Run DESeq2
+
+Perform single batch correction
+
+Perform double batch correction
 Setup with DESeq2
 
 PCA plot before correction, explanations
