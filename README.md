@@ -3,13 +3,15 @@ Batch Correction for Multi-Factorial RNA-seq Experiments
 
 # Context
 
-Here, you will find detailed steps to reproduce the correction method implemented in "DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments".
-
-The HTML file provided focuses on methods of contrast calling to extract meaningful results in DESeq2 with examples, using various designs.
+Here, you will find the main steps to reproduce the correction method implemented in "DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments".
 
 If used in research, please cite:
 
 Roy, J., Monthony, A. S., Torkamaneh, D. (2025). DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments.
+
+For detailed steps and comparisons with other batch correction tools, please refer to the HTML file provided with this repository.
+It also provides methods of contrast calling to extract meaningful results in DESeq2 using various designs applied to the experiment outlined below, with examples and figures.
+Readers will also find various ressources to better understand design matrices and apply DESeq2 to their data at the end of the HTML.
 
 For more information about DESeq2 and the standard RNA-seq analysis steps, refer to:
 
@@ -135,3 +137,8 @@ for (Sample_ID in colnames(normalized_counts_df)) {
 }
 
 ```
+Scaled counts can be rounded if needed, but they are not meant to be reused for differential expression analysis with DESeq2 or other tools.
+
+While the contrasts obtained by using DESeq2 on the scaled counts with a design that excludes the *batch* factor will provide the same log2 fold changes as the original DESeq2 analysis, the *p* values and the adjusted *p* values will be skewed, leading to an increase in false positives.
+
+For complementary information, comparisons
