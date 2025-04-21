@@ -43,7 +43,7 @@ coldata[,2:6] <- lapply(coldata[,2:6], as.factor)
 # load counts
 counts <- read.csv(file = "counts.csv", row.names = 1)
 ```
-Samples are rows in the ColData, with variables as columns. In the count file, rows are genes with samples as columns.
+Samples are rows in the ColData, with factors as columns. In the count file, rows are genes with samples as columns.
 
 ## Run DESeq2
 
