@@ -9,8 +9,8 @@ If used in research, please cite:
 
 Roy, J., Monthony, A. S., Torkamaneh, D. (2025). DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments.
 
-For detailed steps and comparisons with other batch correction tools, please refer to the HTML file provided with this repository.
-It also provides methods of contrast calling to extract meaningful results in DESeq2 using various designs applied to the experiment outlined below, with examples and figures.
+For detailed steps and comparisons with other batch correction tools, please refer to the HTML file provided in this repository.
+It also explains methods of contrast calling to extract meaningful results in DESeq2 using various designs applied to the experiment outlined below, with examples and figures.
 Readers will also find various ressources to better understand design matrices and apply DESeq2 to their data at the end of the HTML.
 
 For more information about DESeq2 and the standard RNA-seq analysis steps, refer to:
