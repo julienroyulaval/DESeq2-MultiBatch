@@ -141,4 +141,4 @@ Scaled counts can be rounded if needed, but they are not meant to be reused for 
 
 While the contrasts obtained by using DESeq2 on the scaled counts with a design that excludes the *batch* factor will provide the same log2 fold changes as the original DESeq2 analysis, the *p* values and the adjusted *p* values will be skewed, leading to an increase in false positives.
 
-For complementary information, comparisons
+For more detail, please refer to the HTML file.
