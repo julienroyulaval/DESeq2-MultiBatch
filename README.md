@@ -52,7 +52,7 @@ Samples are rows in the ColData, with factors as columns. In the count file, row
 ```
 library(DESeq2)
 
-design_single <- ~ Day + Batch + Cultivar + Sex + Sex:Day + Treatment
+design_single <- ~ Day + Batch + Genotype + Sex + Sex:Day + Treatment
 
 dds_single <- DESeqDataSetFromMatrix(countData = counts, colData = coldata, design = design_single)
 
@@ -62,7 +62,7 @@ dds_single <- DESeq(dds_single)
 ### Double batch design (interaction with sex)
 
 ```
-design_double <- ~ Day + Batch + Cultivar + Sex + Sex:Batch + Sex:Day + Treatment
+design_double <- ~ Day + Batch + Genotype + Sex + Sex:Batch + Sex:Day + Treatment
 
 dds_double <- DESeqDataSetFromMatrix(countData = counts, colData = coldata, design = design_double)
 
