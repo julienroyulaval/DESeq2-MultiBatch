@@ -25,9 +25,9 @@ The simulated dataset used in this study consists of 1,000 genes across 48 sampl
 
 The experimental design involves two batches, modeling gene expression in dioecious plants (e.g., XX/XY system) undergoing sex-specific treatments at two distinct time points: Day 0 (vegetative) and Day 1 (early flowering). Due to sex-specific treatments to alter flower sex, male and female plants were separated across batches:
 
-Batch 1: Female controls (n=6) and treated males (n=6)
+Batch A: Female controls (n=6) and treated males (n=6)
 
-Batch 2: Male controls (n=6) and treated females (n=6)
+Batch B: Male controls (n=6) and treated females (n=6)
 
 The treatments were applied following Day 0 measurements but before Day 1 measurements, allowing Day 0 data to serve as a baseline for controlling batch effects. Samples were collected across two genotypes, with three biological replicates per combination of sex, treatment, genotype, and time point.
 
