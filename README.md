@@ -10,6 +10,7 @@ If used in research, please cite:
 Roy, J., Monthony, A. S., Torkamaneh, D. (2025). DESeq2-MultiBatch: Batch Correction for Multi-Factorial RNA-seq Experiments. https://doi.org/10.1101/2025.04.20.649392
 
 For detailed steps and comparisons with other batch correction tools, please refer to the HTML file provided in this repository.
+
 It also explains methods of contrast calling to extract meaningful results in DESeq2 using various designs applied to the experiment outlined below, with examples and figures.
 Readers will also find various ressources to better understand design matrices and apply DESeq2 to their data at the end of the HTML.
 
@@ -24,6 +25,8 @@ For more information about DESeq2 and the standard RNA-seq analysis steps, refer
 ## Experimental design
 
 The simulated dataset used in this study consists of 1,000 genes across 48 samples. The dataset is designed to be computationally efficient, with confirmed scalability to larger real-life datasets.
+
+An HTML with the steps for creating the data is available [here](https://julienroyulaval.github.io/DESeq2-MultiBatch/docs/JR_data_creation_html_08-09-2025.html), which can be found in the docs folder. It can be used to change the experimental design and factors.
 
 The experimental design involves two batches, modeling gene expression in dioecious plants (e.g., XX/XY system) undergoing sex-specific treatments at two distinct time points: Day 0 (vegetative) and Day 1 (early flowering). Due to sex-specific treatments to alter flower sex, male and female plants were separated across batches:
 
