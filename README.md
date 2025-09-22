@@ -259,7 +259,7 @@ adj_d <- MultiBatch(
   round_out = TRUE,
   verbose = TRUE)
 
-scaled_counts_double <- adj$adjusted_counts
+scaled_counts_double <- adj_d$adjusted_counts
 ```
 Scaled counts can be rounded if needed, but they are not meant to be reused for differential expression analysis with DESeq2 or other tools.
 
