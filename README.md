@@ -50,7 +50,11 @@ Samples are rows in the ColData, with factors as columns. In the count file, row
 
 ## Run DESeq2
 
+Here, we prepare dds objects and run the analysis
+
 ### Single batch design
+
+The first object does not include an interaction factor.
 
 ```
 library(DESeq2)
