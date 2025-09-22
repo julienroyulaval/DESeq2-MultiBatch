@@ -72,72 +72,191 @@ dds_double <- DESeqDataSetFromMatrix(countData = counts, colData = coldata, desi
 dds_double <- DESeq(dds_double)
 ```
 
-## Call for contrasts and extract scaling factors
+## MultiBatch function
 
 ```
-resultsNames(dds_single)
-resultsNames(dds_double)
+MultiBatch <- function(
+    dds,
+    batch_factor,
+    interact_factor = NULL,
+    mode = c("center", "reference"),
+    use_normalized = TRUE,
+    round_out = TRUE,
+    independentFiltering = FALSE,
+    verbose = TRUE
+) {
+  stopifnot(is(dds, "DESeqDataSet"))
+  mode <- match.arg(mode)
+  
+  rnames <- DESeq2::resultsNames(dds)
+  cd <- as.data.frame(SummarizedExperiment::colData(dds))
+  if (!batch_factor %in% names(cd))
+    stop("batch_factor '", batch_factor, "' not found in colData(dds).")
+  if (!is.null(interact_factor) && !interact_factor %in% names(cd))
+    stop("interact_factor '", interact_factor, "' not found in colData(dds).")
+  
+  nc <- DESeq2::counts(dds, normalized = use_normalized)
+  nc <- as.matrix(nc)
+  G <- nrow(nc)
+  
+  bf <- as.factor(cd[[batch_factor]])
+  b_levels <- levels(bf)
+  if (is.null(b_levels) || length(b_levels) < 2)
+    stop("Batch factor must have at least 2 levels.")
+  b_ref <- b_levels[1]
+  
+  if (is.null(interact_factor)) {
+    if (verbose) message("No interact_factor provided; adjusting Batch main effect only.")
+    int_levels <- "(no-int)"
+    i_ref <- "(no-int)"
+    int_vec <- rep("(no-int)", nrow(cd))
+  } else {
+    intf <- as.factor(cd[[interact_factor]])
+    int_levels <- levels(intf)
+    i_ref <- int_levels[1]
+    int_vec <- as.character(intf)
+  }
+  
+  safe_lfc <- function(v) {
+    v[is.na(v)] <- 0
+    as.numeric(v)
+  }
+  
+  get_lfc_by_name <- function(coef_name) {
+    if (!(coef_name %in% rnames)) {
+      if (verbose) message("  (missing coef) ", coef_name)
+      return(rep(0, G))
+    }
+    res <- DESeq2::results(dds, name = coef_name, independentFiltering = independentFiltering)
+    safe_lfc(res$log2FoldChange)
+  }
 
-# single
-batch <- results(dds_single, name = "Batch_b_vs_a", independentFiltering = FALSE)
-batch <- as.data.frame(batch)
+  batch_coef_name <- function(batch_level) {
+    paste0(batch_factor, "_", batch_level, "_vs_", b_ref)
+  }
+  
+  interaction_coef_name <- function(b_lev, i_lev) {
+    if (is.null(interact_factor) || b_lev == b_ref || i_lev == i_ref) return(NA_character_)
+    candidates <- c(
+      paste0(batch_factor, b_lev, ".", interact_factor, i_lev),
+      paste0(interact_factor, i_lev, ".", batch_factor, b_lev)
+    )
+    hit <- candidates[candidates %in% rnames]
+    if (length(hit) == 0) NA_character_ else hit[1]
+  }
+  
+  if (verbose) message("Collecting main Batch coefficients relative to '", b_ref, "'...")
+  main_batch_LFC <- vector("list", length(b_levels))
+  names(main_batch_LFC) <- b_levels
+  main_batch_LFC[[b_ref]] <- rep(0, G)
+  for (bl in b_levels[b_levels != b_ref]) {
+    nm <- batch_coef_name(bl)
+    if (verbose) message("  ", nm)
+    main_batch_LFC[[bl]] <- get_lfc_by_name(nm)
+  }
+  
+  delta_by_intlevel <- vector("list", length(int_levels))
+  names(delta_by_intlevel) <- int_levels
+  
+  if (is.null(interact_factor)) {
+    M <- do.call(cbind, main_batch_LFC)
+    colnames(M) <- b_levels
+    delta_by_intlevel[[1]] <- M
+  } else {
+    if (verbose) message("Collecting Batch: ", interact_factor, " interaction coefficients...")
+    for (il in int_levels) {
+      # start from main batch effects
+      M <- do.call(cbind, main_batch_LFC)
+      colnames(M) <- b_levels
+      
+      if (il != i_ref) {
+        for (bl in b_levels[b_levels != b_ref]) {
+          nm_int <- interaction_coef_name(bl, il)
+          if (!is.na(nm_int)) {
+            if (verbose) message("  + ", nm_int)
+            M[, bl] <- M[, bl] + get_lfc_by_name(nm_int)
+          } else {
+            if (verbose) message("  (no explicit coef for ", bl, "×", il, ")")
+          }
+        }
+      }
+      delta_by_intlevel[[il]] <- M
+    }
+  }
 
-batch$Scaling_Factor_Batch_A <- sqrt(2^(batch$log2FoldChange))
-batch$Scaling_Factor_Batch_B <- 1 / batch$Scaling_Factor_Batch_A
+  if (verbose) message("Computing per-gene scaling factors (mode = '", mode, "').")
+  scale_by_intlevel <- lapply(delta_by_intlevel, function(M) {
+    if (mode == "center") {
+      row_means <- rowMeans(M, na.rm = TRUE)
+      sweep_M <- sweep(M, 1, row_means, FUN = "-")
+      2^(-sweep_M)
+    } else {
+      2^(-M)
+    }
+  })
 
-# double
-batch_xx <- results(dds_double, name = "Batch_b_vs_a", independentFiltering = FALSE)
-batch_xx <- as.data.frame(batch_xx)
-batch_xy <- results(dds_double, contrast=list(c("Batch_b_vs_a","Batchb.Sexxy")), independentFiltering = FALSE)
-batch_xy <- as.data.frame(batch_xy)
+  if (verbose) message("Applying scaling factors to columns of the count matrix...")
+  out <- nc
+  sample_batches <- as.character(bf)
+  for (j in seq_len(ncol(nc))) {
+    bl <- sample_batches[j]
+    il <- int_vec[j]
+    if (is.null(interact_factor)) il <- "(no-int)"
+    
+    S <- scale_by_intlevel[[il]][, bl]
+    out[, j] <- nc[, j] * S
+  }
+  
+  if (round_out) {
+    out <- round(out)
+    storage.mode(out) <- "integer"
+  }
+  
+  if (verbose) {
+    message("Done.")
+    message("Reference levels inferred from colData(): ",
+            batch_factor, "='", b_ref, "'",
+            if (!is.null(interact_factor)) paste0(", ", interact_factor, "='", i_ref, "'") else "")
+  }
 
-batch_xx$Scaling_Factor_Batch_A <- sqrt(2^(batch_xx$log2FoldChange))
-batch_xx$Scaling_Factor_Batch_B <- 1 / batch_xx$Scaling_Factor_Batch_A
+  list(
+    adjusted_counts = out,
+    scaling_tables = scale_by_intlevel,
+    delta_tables   = delta_by_intlevel,
+    batch_levels   = b_levels,
+    interact_levels = int_levels,
+    reference = list(batch = b_ref, interact = i_ref),
+    mode = mode,
+    used_results_names = rnames
+  )
+}
 
-batch_xy$Scaling_Factor_Batch_A <- sqrt(2^(batch_xy$log2FoldChange))
-batch_xy$Scaling_Factor_Batch_B <- 1 / batch_xy$Scaling_Factor_Batch_A
 ```
 
 ## Apply corrections
 
 ```
 # single
-normalized_counts_df <- as.data.frame(counts(dds_single, normalized = TRUE))
-scaled_counts_single <- normalized_counts_df
 
-for (Sample_ID in colnames(normalized_counts_df)) {
-  
-  Batch <- coldata[Sample_ID, "Batch"]
-  
-  if (Batch == "a") {
-    scaling_factors <- batch$Scaling_Factor_Batch_A
-  } else if (Batch == "b") {
-    scaling_factors <- batch$Scaling_Factor_Batch_B
-  }
-  
-  scaled_counts_single[, Sample_ID] <- normalized_counts_df[, Sample_ID] * scaling_factors
-}
+adj_s <- MultiBatch(
+  dds_single,
+  batch_factor    = "Batch",
+  interact_factor = NULL,
+  mode = "center",
+  use_normalized = TRUE,
+  round_out = TRUE,
+  verbose = TRUE)
 
 # double
-normalized_counts_df <- as.data.frame(counts(dds_double, normalized = TRUE))
-scaled_counts_double <- normalized_counts_df
-for (Sample_ID in colnames(normalized_counts_df)) {
 
-  Sex <- coldata[Sample_ID, "Sex"]
-  Batch <- coldata[Sample_ID, "Batch"]
-
-  if (Sex == "xx" && Batch == "a") {
-    scaling_factors <- batch_xx$Scaling_Factor_Batch_A
-  } else if (Sex == "xx" && Batch == "b") {
-    scaling_factors <- batch_xx$Scaling_Factor_Batch_B
-  } else if (Sex == "xy" && Batch == "a") {
-    scaling_factors <- batch_xy$Scaling_Factor_Batch_A
-  } else if (Sex == "xy" && Batch == "b") {
-    scaling_factors <- batch_xy$Scaling_Factor_Batch_B
-  }
-
-  scaled_counts_double[, Sample_ID] <- normalized_counts_df[, Sample_ID] * scaling_factors
-}
+adj_d <- MultiBatch(
+  dds_double,
+  batch_factor    = "Batch",
+  interact_factor = "Sex",
+  mode = "center",
+  use_normalized = TRUE,
+  round_out = TRUE,
+  verbose = TRUE)
 
 ```
 Scaled counts can be rounded if needed, but they are not meant to be reused for differential expression analysis with DESeq2 or other tools.
