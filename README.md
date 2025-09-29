@@ -133,6 +133,11 @@ mode: the adjustment mode used.
 
 used_results_names: the resultsNames(dds) captured for reproducibility/debugging
 
+
+**Notes**
+
+The function does not alter other factors beyond removing/centering the Batch (and optionally Batch×Interaction) contributions from the counts matrix used for visualization/PCA/heatmaps. Use the original dds for inference (contrasts, p-values).
+
 ```
 MultiBatch <- function(
     dds,
