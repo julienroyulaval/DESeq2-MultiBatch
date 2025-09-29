@@ -78,6 +78,61 @@ dds_double <- DESeq(dds_double)
 
 ## MultiBatch function
 
+**MultiBatch**
+
+Adjust normalized RNA-seq counts by removing batch effects estimated by a DESeq2 model, optionally including a Batch×Interaction term. Works with ≥2 batch levels and ≥2 interaction levels.
+
+
+**Description**
+
+MultiBatch() builds per-gene scaling factors from DESeq2 coefficients and applies them to the count matrix. Two adjustment modes are available:
+
+"center" (default): centers batch effects within each interaction level to the geometric mean across batch levels.
+
+"reference": maps all batches back to the reference batch level used by DESeq2.
+
+If an interaction factor is provided, the function combines the main Batch effects with Batch × Interaction effects for the appropriate interaction level of each sample.
+
+
+**Arguments**
+
+dds: A DESeqDataSet fit with DESeq(). Its design must include the batch factor (and, if used, the interaction term with interact_factor).
+
+batch_factor: column name in colData(dds) giving the batch factor (e.g., "Batch"). Must have ≥2 levels. The first level in levels(colData(dds)[[batch_factor]]) is treated as the reference.
+
+interact_factor: if provided, must be a column in colData(dds) used in the model such that the design includes the interaction with batch. Any number of levels is supported; the first is the reference interaction level.
+
+mode: "center" or "reference". "center" subtracts the per-gene mean batch effect (within each interaction level), then rescales counts by 2^(-centered_effect). "reference" rescales counts by 2^(-effect) so all batches map to the reference batch.
+
+use_normalized: Logical. If TRUE (default), adjusts counts(dds, normalized = TRUE). If FALSE, adjusts raw counts (rarely desired).
+
+round_out: Logical. If TRUE (default), rounds the adjusted matrix to integers.
+
+independentFiltering: Logical passed to DESeq2::results() when extracting coefficients; defaults to FALSE to avoid NA filtering of LFCs.
+
+verbose: Logical. If TRUE, prints progress and notes about detected coefficients and reference levels.
+
+
+**Value**
+
+A list with components:
+
+adjusted_counts: matrix of adjusted counts (integer if round_out = TRUE), same dim/rownames/colnames as the input counts.
+
+scaling_tables: list of matrices (one per interaction level) of per-gene scaling factors, columns ordered by batch levels.
+
+delta_tables: list of matrices (one per interaction level) of per-gene log2 effects before conversion to scaling factors.
+
+batch_levels: character vector of batch levels (reference is first).
+
+interact_levels: character vector of interaction levels (or "(no-int)" if interact_factor = NULL).
+
+reference: list(batch = <ref_batch>, interact = <ref_interact>).
+
+mode: the adjustment mode used.
+
+used_results_names: the resultsNames(dds) captured for reproducibility/debugging
+
 ```
 MultiBatch <- function(
     dds,
