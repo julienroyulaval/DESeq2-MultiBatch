@@ -333,9 +333,14 @@ For more detail, please refer to the HTML file.
 
 ## Supplementary Figures
 
-<p align="center">
-  <img src="figures/pca_raw.png" width="45%">
-  <img src="figures/pca_comp.png" width="45%"><br>
-  <img src="figures/pca_single_comp.png" width="45%">
-  <img src="figures/combat_comparison.png" width="45%">
-</p>
+Supplementary Figure 1
+![PCA raw](figures/pca_raw.png)
+
+Supplementary Figure 2
+![PCA single comparison](figures/pca_single_comp.png)
+
+Supplementary Figure 3
+![PCA comparison](figures/pca_comp.png)
+
+Supplementary Figure 4
+![Combat comparison](figures/combat_comparison.png)
